@@ -2,7 +2,5 @@
 	"name": "react-19-reference",
 	"url": "https://react.dev/reference/react",
 	"match": "https://react.dev/reference/react/**",
-	"selector": "article",
-	"maxPagesToCrawl": 500,
-	"maxTokens": 2000000
+	"selector": "article"
 }

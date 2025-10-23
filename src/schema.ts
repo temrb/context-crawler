@@ -21,6 +21,13 @@ const Page: z.ZodType<Page> = z.custom<Page>((val) => {
 	);
 });
 
+export const globalConfigSchema = z.object({
+	maxPagesToCrawl: z.number(),
+	maxTokens: z.number(),
+});
+
+export type GlobalConfig = z.infer<typeof globalConfigSchema>;
+
 export const configSchema = z.object({
 	/**
 	 * Unique identifier for this configuration
@@ -31,7 +38,6 @@ export const configSchema = z.object({
 	match: z.union([z.string(), z.array(z.string())]),
 	exclude: z.union([z.string(), z.array(z.string())]).optional(),
 	selector: z.string(),
-	maxPagesToCrawl: z.number(),
 	/**
 	 * File name for the finished data
 	 * If not provided, will be auto-generated from the URL
@@ -57,7 +63,6 @@ export const configSchema = z.object({
 	waitForSelectorTimeout: z.number().optional(),
 	resourceExclusions: z.array(z.string()).optional(),
 	maxFileSize: z.number().optional(),
-	maxTokens: z.number().optional(),
 	/**
 	 * Storage directory for Crawlee data (isolated per job)
 	 * @internal Used internally to isolate concurrent crawls
@@ -119,10 +124,10 @@ export function generateOutputFileNameFromUrl(url: string): string {
 			.split('/')
 			.filter((segment) => segment.length > 0);
 
-		// Build the output path: output/{domain}/{first-path-segment}.json or output/{domain}.json
+		// Build the output path: output/{domain}/{first-path-segment}.json or output/{domain}/docs.json
 		const parts = pathSegments.length > 0
 			? ['output', domain, pathSegments[0]]
-			: ['output', domain];
+			: ['output', domain, 'docs'];
 		return parts.join('/') + '.json';
 	} catch (error) {
 		// Fallback to simple output.json

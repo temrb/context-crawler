@@ -24,7 +24,6 @@ const messages = {
 	url: 'What is the first URL of the website you want to crawl?',
 	match: 'What is the URL pattern you want to match?',
 	selector: 'What is the CSS selector you want to match?',
-	maxPagesToCrawl: 'How many pages do you want to crawl?',
 	outputFileName: 'What is the name of the output file?',
 	config: 'Name of the crawl configuration to use',
 };
@@ -119,10 +118,8 @@ async function handler(cliOptions: Partial<Config> & { config?: string }) {
 			};
 		}
 
-		// Apply defaults for any remaining undefined options
-		const finalConfig: Config = {
-			maxPagesToCrawl: 50,
-		} as Config;
+		// Validate and use the config
+		const finalConfig = config as Config;
 
 		// Use ContextCrawlerCore for isolated dataset management
 		const crawler = new ContextCrawlerCore(finalConfig);
@@ -144,7 +141,6 @@ program
 	.option('-u, --url <string>', messages.url)
 	.option('-m, --match <string>', messages.match)
 	.option('-s, --selector <string>', messages.selector)
-	.option('-p, --maxPagesToCrawl <number>', messages.maxPagesToCrawl, parseInt)
 	.option('-o, --outputFileName <string>', messages.outputFileName)
 	.action(handler);
 

@@ -1,0 +1,6 @@
+{
+	"name": "zod-docs",
+	"url": "https://zod.dev/",
+	"match": "https://zod.dev/*",
+	"selector": "article"
+}

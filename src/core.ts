@@ -7,6 +7,7 @@ import { dirname, join } from 'path';
 import { isWithinTokenLimit } from 'gpt-tokenizer';
 import { Page } from 'playwright';
 import logger from './logger.js';
+import { getGlobalConfig } from './config.js';
 import { Config, configSchema, CrawledData, generateOutputFileNameFromUrl } from './schema.js';
 
 let pageCounter = 0;
@@ -56,6 +57,9 @@ export async function crawl(config: ConfigWithDataset) {
 	configSchema.parse(config);
 
 	if (process.env.NO_CRAWL !== 'true') {
+		// Load global config
+		const globalConfig = getGlobalConfig();
+
 		// Create isolated storage directory for this job
 		const storageDir = config.storageDir || join(process.cwd(), 'storage', 'jobs', config.datasetName);
 
@@ -71,7 +75,7 @@ export async function crawl(config: ConfigWithDataset) {
 					const title = await page.title();
 					pageCounter++;
 					log.info(
-						`Crawling: Page ${pageCounter} / ${config.maxPagesToCrawl} - URL: ${request.loadedUrl}...`
+						`Crawling: Page ${pageCounter} / ${globalConfig.maxPagesToCrawl} - URL: ${request.loadedUrl}...`
 					);
 
 					// Use custom handling for XPath selector
@@ -110,7 +114,7 @@ export async function crawl(config: ConfigWithDataset) {
 					});
 				},
 				// Comment this option to scrape the full website.
-				maxRequestsPerCrawl: config.maxPagesToCrawl,
+				maxRequestsPerCrawl: globalConfig.maxPagesToCrawl,
 				// Limit concurrent requests per crawler to reduce memory usage
 				maxConcurrency: 2,
 				// Add retry configuration
@@ -182,6 +186,9 @@ export async function crawl(config: ConfigWithDataset) {
 export async function write(config: ConfigWithDataset): Promise<PathLike | null> {
 	let nextFileNameString: PathLike | null = null;
 
+	// Load global config
+	const globalConfig = getGlobalConfig();
+
 	// Determine storage directory
 	const storageDir = config.storageDir || join(process.cwd(), 'storage', 'jobs', config.datasetName);
 
@@ -233,11 +240,11 @@ export async function write(config: ConfigWithDataset): Promise<PathLike | null>
 		const contentString: string = JSON.stringify(data);
 		const tokenCount: number | false = isWithinTokenLimit(
 			contentString,
-			config.maxTokens || Infinity
+			globalConfig.maxTokens
 		);
 
 		if (typeof tokenCount === 'number') {
-			if (estimatedTokens + tokenCount > config.maxTokens!) {
+			if (estimatedTokens + tokenCount > globalConfig.maxTokens) {
 				// Only write the batch if it's not empty (something to write)
 				if (currentResults.length > 0) {
 					await writeBatchToFile();

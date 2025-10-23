@@ -1,14 +1,16 @@
-import { readFileSync, readdirSync, statSync } from 'fs';
+import { readdirSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
-import { NamedConfig } from './schema.js';
+import { GlobalConfig, globalConfigSchema, NamedConfig } from './schema.js';
 
 const CONFIGURATIONS_DIR = './configurations';
+const GLOBAL_CONFIG_PATH = join(CONFIGURATIONS_DIR, 'config.json');
 
 /**
  * Cache for loaded configurations
  */
 let configurationsCache: NamedConfig[] | null = null;
 let batchesCache: Record<string, NamedConfig[]> | null = null;
+let globalConfigCache: GlobalConfig | null = null;
 
 /**
  * Recursively loads all configuration files from a directory
@@ -21,7 +23,7 @@ function loadConfigsFromDirectory(dirPath: string): NamedConfig[] {
 		const fullPath = join(dirPath, entry);
 		const stat = statSync(fullPath);
 
-		if (stat.isFile() && entry.endsWith('.json')) {
+		if (stat.isFile() && entry.endsWith('.json') && entry !== 'config.json') {
 			const content = readFileSync(fullPath, 'utf-8');
 			const config = JSON.parse(content);
 
@@ -139,4 +141,25 @@ export function getAllBatchNames(): string[] {
  */
 export function getAllConfigurations(): NamedConfig[] {
 	return loadAllConfigurations();
+}
+
+/**
+ * Loads the global configuration from .config.json
+ * @returns {GlobalConfig} The global configuration object
+ */
+export function getGlobalConfig(): GlobalConfig {
+	if (globalConfigCache) {
+		return globalConfigCache;
+	}
+
+	try {
+		const content = readFileSync(GLOBAL_CONFIG_PATH, 'utf-8');
+		const config = JSON.parse(content);
+		globalConfigCache = globalConfigSchema.parse(config);
+		return globalConfigCache;
+	} catch (error) {
+		throw new Error(
+			`Failed to load global configuration from ${GLOBAL_CONFIG_PATH}: ${error instanceof Error ? error.message : error}`
+		);
+	}
 }

@@ -2,7 +2,5 @@
 	"name": "nextjs-16-gs",
 	"url": "https://nextjs.org/docs/app/getting-started",
 	"match": "https://nextjs.org/docs/app/getting-started/**",
-	"selector": "article",
-	"maxPagesToCrawl": 500,
-	"maxTokens": 2000000
+	"selector": "article"
 }

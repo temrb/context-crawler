@@ -2,7 +2,5 @@
 	"name": "trpc-client-reference",
 	"url": "https://trpc.io/docs/client",
 	"match": "https://trpc.io/docs/client/**",
-	"selector": "article",
-	"maxPagesToCrawl": 500,
-	"maxTokens": 2000000
+	"selector": "article"
 }

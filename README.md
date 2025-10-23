@@ -7,12 +7,15 @@ Crawl websites to generate knowledge files from one or multiple URLs. Built with
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
   - [Configuration](#configuration)
-    - [Adding a New Configuration](#adding-a-new-configuration)
+    - [Global Configuration Setup](#global-configuration-setup)
+    - [Adding Individual Configurations](#adding-individual-configurations)
   - [Usage](#usage)
     - [CLI Mode](#cli-mode)
     - [Batch Mode](#batch-mode)
     - [API Server](#api-server)
 - [Configuration Options](#configuration-options)
+  - [Individual Configuration Options](#individual-configuration-options)
+  - [Global Configuration Options](#global-configuration-options)
 - [Project Structure](#project-structure)
 - [Output](#output)
 - [Using the Output](#using-the-output)
@@ -24,9 +27,9 @@ Crawl websites to generate knowledge files from one or multiple URLs. Built with
 
 - **Queue-Based Worker Architecture**: Async job processing with persistent SQLite queue and job tracking
 - **Multiple Operating Modes**: CLI interactive mode, batch processing, and REST API server
-- **Flexible Configuration**: JSON-based configurations with auto-discovery from directory structure
+- **Flexible Configuration**: JSON-based configurations with auto-discovery and global settings
 - **Concurrent Processing**: Configurable worker concurrency for parallel crawling
-- **Smart Output Management**: Automatic file splitting based on token limits and file size
+- **Smart Output Management**: Automatic file splitting based on global token limits and per-config file size
 - **Sitemap Support**: Can crawl from sitemaps or individual URLs
 - **Resource Filtering**: Exclude specific resource types to optimize crawling
 - **Cookie Support**: Handle authenticated pages with cookie configuration
@@ -59,13 +62,40 @@ bun install
 
 Playwright browsers will be installed automatically during the installation process.
 
+3. Create the global configuration file `configurations/.config.json`:
+
+```json
+{
+	"maxPagesToCrawl": 500,
+	"maxTokens": 2000000
+}
+```
+
+This file is required and contains settings that apply to all crawl jobs.
+
 ### Configuration
 
-The project uses a JSON-based configuration system. Configurations are stored in the `configurations/` directory, organized by batch subdirectories.
+The project uses a JSON-based configuration system with two types of configurations:
 
-#### Adding a New Configuration
+1. **Individual Configurations**: Crawl-specific settings (URL, selectors, etc.)
+2. **Global Configuration**: Settings that apply to all crawl jobs (limits, tokens, etc.)
 
-1. Create a JSON file in an appropriate batch directory (or create a new one):
+#### Global Configuration Setup
+
+The global configuration file `configurations/.config.json` contains settings that apply to all crawl jobs. Create this file first:
+
+```json
+{
+	"maxPagesToCrawl": 500,
+	"maxTokens": 2000000
+}
+```
+
+#### Adding Individual Configurations
+
+Individual configurations are stored in `configurations/` subdirectories, organized by batch:
+
+1. Create a batch directory:
 
 ```sh
 mkdir -p configurations/my-batch
@@ -78,9 +108,7 @@ mkdir -p configurations/my-batch
 	"name": "my-crawler",
 	"url": "https://example.com/docs",
 	"match": "https://example.com/docs/**",
-	"selector": "article",
-	"maxPagesToCrawl": 50,
-	"maxTokens": 2000000
+	"selector": "article"
 }
 ```
 
@@ -111,7 +139,7 @@ bun run cli -- single --config react-19-reference
 **Override configuration options via CLI flags:**
 
 ```sh
-bun run cli -- single --config my-crawler --maxPagesToCrawl 100
+bun run cli -- single --config my-crawler --outputFileName custom-output.json
 ```
 
 #### Batch Mode
@@ -184,8 +212,7 @@ npm run start:worker
   		"name": "custom-crawl",
   		"url": "https://example.com",
   		"match": "https://example.com/**",
-  		"selector": "article",
-  		"maxPagesToCrawl": 50
+  		"selector": "article"
   	}
   }
   ```
@@ -229,7 +256,11 @@ curl -H "X-API-KEY: your-secret-api-key-here" \
 
 ## Configuration Options
 
-The configuration schema is defined in `src/schema.ts`. All configurations are JSON files with the following options:
+The configuration system uses two types of configuration files, both defined in `src/schema.ts`:
+
+### Individual Configuration Options
+
+Each individual configuration file in `configurations/{batch-name}/` should contain:
 
 | Option | Type | Required | Description |
 |--------|------|----------|-------------|
@@ -237,23 +268,37 @@ The configuration schema is defined in `src/schema.ts`. All configurations are J
 | `url` | `string` | ✅ | Starting URL (supports sitemaps ending in .xml) |
 | `match` | `string \| string[]` | ✅ | URL pattern(s) to match for crawling (glob format) |
 | `selector` | `string` | ✅ | CSS selector or XPath (starting with /) to extract content |
-| `maxPagesToCrawl` | `number` | ✅ | Maximum number of pages to crawl |
 | `outputFileName` | `string` | | Output file path (auto-generated from URL if not provided) |
-| `maxTokens` | `number` | | Maximum tokens per output file (will split if exceeded) |
 | `maxFileSize` | `number` | | Maximum file size in MB (will split if exceeded) |
 | `exclude` | `string \| string[]` | | URL pattern(s) to exclude from crawling |
 | `resourceExclusions` | `string[]` | | Resource types to exclude during crawl |
 | `waitForSelectorTimeout` | `number` | | Timeout for waiting for selector (ms) |
 | `cookie` | `object \| object[]` | | Cookie configuration for authenticated pages<br>`{ name: string, value: string }` |
 
-**Example Configuration:**
+**Example Individual Configuration:**
 
 ```json
 {
 	"name": "react-19-reference",
 	"url": "https://react.dev/reference/react",
 	"match": "https://react.dev/reference/react/**",
-	"selector": "article",
+	"selector": "article"
+}
+```
+
+### Global Configuration Options
+
+Global settings in `configurations/.config.json` that apply to all crawl jobs:
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `maxPagesToCrawl` | `number` | ✅ | Maximum number of pages to crawl per job |
+| `maxTokens` | `number` | ✅ | Maximum tokens per output file (will split if exceeded) |
+
+**Example Global Configuration:**
+
+```json
+{
 	"maxPagesToCrawl": 500,
 	"maxTokens": 2000000
 }
@@ -274,6 +319,7 @@ context-crawler/
 │   ├── logger.ts              # Pino structured logger
 │   └── schema.ts              # Zod configuration schema & types
 ├── configurations/            # JSON configuration files
+│   ├── .config.json           # Global configuration (maxPagesToCrawl, maxTokens)
 │   ├── react/                 # React documentation configs
 │   ├── nextJs/                # Next.js documentation configs
 │   ├── trpc/                  # tRPC documentation configs
@@ -295,7 +341,7 @@ context-crawler/
 - **Worker**: Background process that executes queued crawl jobs
 - **Queue**: Persistent SQLite queue with retry logic and concurrency control
 - **Job Store**: Tracks job status, results, and metadata
-- **Config Loader**: Auto-discovers configurations from `configurations/` directory
+- **Config Loader**: Auto-discovers individual configs from `configurations/` subdirectories and loads global settings from `.config.json`
 
 ## Output
 
@@ -316,8 +362,11 @@ Crawled data is saved in JSON format in the `output/` directory. Each entry cont
 
 **Automatic File Splitting:**
 
-Files are automatically split if they exceed `maxTokens` or `maxFileSize` limits:
+Files are automatically split when they exceed configured limits:
+- **Token limit**: `maxTokens` (set in global config)
+- **File size limit**: `maxFileSize` (set per-config in MB)
 
+When splitting occurs, files are numbered sequentially:
 - `output-1.json`
 - `output-2.json`
 - etc.

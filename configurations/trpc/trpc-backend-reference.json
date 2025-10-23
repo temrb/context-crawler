@@ -2,7 +2,5 @@
 	"name": "trpc-backend-reference",
 	"url": "https://trpc.io/docs/server",
 	"match": "https://trpc.io/docs/server/**",
-	"selector": "article",
-	"maxPagesToCrawl": 500,
-	"maxTokens": 2000000
+	"selector": "article"
 }
