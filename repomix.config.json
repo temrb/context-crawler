@@ -1,0 +1,42 @@
+{
+	"$schema": "https://repomix.com/schemas/latest/schema.json",
+	"input": {
+		"maxFileSize": 52428800
+	},
+	"output": {
+		"filePath": "data/.context/concatenated_docs.xml",
+		"style": "xml",
+		"parsableStyle": false,
+		"fileSummary": false,
+		"directoryStructure": true,
+		"files": true,
+		"removeComments": true,
+		"removeEmptyLines": true,
+		"compress": false,
+		"topFilesLength": 0,
+		"showLineNumbers": false,
+		"truncateBase64": false,
+		"copyToClipboard": false,
+		"tokenCountTree": false,
+		"includeEmptyDirectories": true,
+		"git": {
+			"sortByChanges": true,
+			"sortByChangesMaxCommits": 100,
+			"includeDiffs": false,
+			"includeLogs": false,
+			"includeLogsCount": 50
+		}
+	},
+	"include": ["data"],
+	"ignore": {
+		"useGitignore": true,
+		"useDefaultPatterns": true,
+		"customPatterns": []
+	},
+	"security": {
+		"enableSecurityCheck": false
+	},
+	"tokenCount": {
+		"encoding": "o200k_base"
+	}
+}
