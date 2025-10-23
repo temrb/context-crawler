@@ -2,13 +2,12 @@
 import { Configuration, PlaywrightCrawler, downloadListOfUrls } from "crawlee";
 import { readFile, writeFile } from "fs/promises";
 import { glob } from "glob";
-import { Config, configSchema } from "./config.js";
+import { Config, configSchema, CrawledData } from "./config.js";
 import { Page } from "playwright";
 import { isWithinTokenLimit } from "gpt-tokenizer";
 import { PathLike } from "fs";
 
 let pageCounter = 0;
-let crawler: PlaywrightCrawler;
 
 export function getPageHtml(page: Page, selector = "body") {
   return page.evaluate((selector) => {
@@ -54,7 +53,7 @@ export async function crawl(config: Config) {
   if (process.env.NO_CRAWL !== "true") {
     // PlaywrightCrawler crawls the web using a headless
     // browser controlled by the Playwright library.
-    crawler = new PlaywrightCrawler(
+    const crawler = new PlaywrightCrawler(
       {
         // Use the requestHandler to process each of the crawled pages.
         async requestHandler({ request, page, enqueueLinks, log, pushData }) {
@@ -96,7 +95,7 @@ export async function crawl(config: Config) {
             exclude:
               typeof config.exclude === "string"
                 ? [config.exclude]
-                : config.exclude ?? [],
+                : (config.exclude ?? []),
           });
         },
         // Comment this option to scrape the full website.
@@ -158,15 +157,15 @@ export async function crawl(config: Config) {
   }
 }
 
-export async function write(config: Config) {
-  let nextFileNameString: PathLike = "";
+export async function write(config: Config): Promise<PathLike | null> {
+  let nextFileNameString: PathLike | null = null;
   const jsonFiles = await glob("storage/datasets/default/*.json", {
     absolute: true,
   });
 
   console.log(`Found ${jsonFiles.length} files to combine...`);
 
-  let currentResults: Record<string, any>[] = [];
+  let currentResults: CrawledData[] = [];
   let currentSize: number = 0;
   let fileCounter: number = 1;
   const maxBytes: number = config.maxFileSize
@@ -196,7 +195,7 @@ export async function write(config: Config) {
   let estimatedTokens: number = 0;
 
   const addContentOrSplit = async (
-    data: Record<string, any>,
+    data: CrawledData,
   ): Promise<void> => {
     const contentString: string = JSON.stringify(data);
     const tokenCount: number | false = isWithinTokenLimit(
@@ -228,7 +227,7 @@ export async function write(config: Config) {
   // Iterate over each JSON file and process its contents.
   for (const file of jsonFiles) {
     const fileContent = await readFile(file, "utf-8");
-    const data: Record<string, any> = JSON.parse(fileContent);
+    const data: CrawledData = JSON.parse(fileContent) as CrawledData;
     await addContentOrSplit(data);
   }
 
@@ -251,15 +250,8 @@ class GPTCrawlerCore {
     await crawl(this.config);
   }
 
-  async write(): Promise<PathLike> {
-    // we need to wait for the file path as the path can change
-    return new Promise((resolve, reject) => {
-      write(this.config)
-        .then((outputFilePath) => {
-          resolve(outputFilePath);
-        })
-        .catch(reject);
-    });
+  async write(): Promise<PathLike | null> {
+    return write(this.config);
   }
 }
 

@@ -1,15 +1,24 @@
 {
-  "extends": "@apify/tsconfig",
-  "compilerOptions": {
-    "module": "ES2022",
-    "target": "ES2022",
-    "outDir": "dist",
-    "moduleResolution": "node",
-    "resolveJsonModule": true,
-    "noUnusedLocals": false,
-    "skipLibCheck": true,
-    "lib": ["DOM"],
-    "strict": true,
-  },
-  "include": ["./src/**/*", "config.ts"]
+	"extends": "@apify/tsconfig",
+	"compilerOptions": {
+		"module": "ES2022",
+		"target": "ES2022",
+		"outDir": "dist",
+		"moduleResolution": "node",
+		"resolveJsonModule": true,
+		"noUnusedLocals": false,
+		"skipLibCheck": true,
+		"lib": ["DOM"],
+		"strict": true,
+		"noImplicitAny": true,
+		"strictNullChecks": true,
+		"strictFunctionTypes": true,
+		"strictPropertyInitialization": true,
+		"noImplicitThis": true,
+		"alwaysStrict": true,
+		"noImplicitReturns": true,
+		"noFallthroughCasesInSwitch": true,
+		"noUncheckedIndexedAccess": true
+	},
+	"include": ["./src/**/*", "config.ts"]
 }

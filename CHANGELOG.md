@@ -1,9 +1,31 @@
-## [1.5.1](https://github.com/BuilderIO/gpt-crawler/compare/v1.5.0...v1.5.1) (2025-01-23)
+# [1.6.0](https://github.com/BuilderIO/gpt-crawler/compare/v1.5.1...v1.6.0) (2024-10-22)
 
+### Features
+
+- add named crawl configurations with `crawlConfigurations` array ([config.ts](config.ts))
+- add `getConfigurationByName()` helper function for configuration lookup ([config.ts](config.ts))
+- improve containerapp with clearer documentation and simplified init script ([containerapp/data/init.sh](containerapp/data/init.sh))
+
+### Security
+
+- add security warnings for Docker-in-Docker configuration in containerapp ([containerapp/README.md](containerapp/README.md))
+
+### BREAKING CHANGES
+
+- Switch from npm to Bun package manager (removed package-lock.json, added bun.lock)
+- Config structure enhanced with named configurations
+
+### Chore
+
+- remove GitHub Actions workflows (pr.yml and release.yml)
+- normalize line endings across multiple files (CRLF → LF)
+- remove sudo requirements from containerapp/run.sh script
+
+## [1.5.1](https://github.com/BuilderIO/gpt-crawler/compare/v1.5.0...v1.5.1) (2024-01-23)
 
 ### Bug Fixes
 
-* correctly set cookies ([567ab0b](https://github.com/BuilderIO/gpt-crawler/commit/567ab0b0a538032d02743ae3ecc51dfdc0fdb5c6))
+- correctly set cookies ([567ab0b](https://github.com/BuilderIO/gpt-crawler/commit/567ab0b0a538032d02743ae3ecc51dfdc0fdb5c6))
 
 # [1.5.0](https://github.com/BuilderIO/gpt-crawler/compare/v1.4.0...v1.5.0) (2024-07-05)
 
