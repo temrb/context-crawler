@@ -1,15 +1,28 @@
 import { crawl, write } from '../core.js';
-import { getConfigurationByName, type ConfigurationName } from './index.js';
+import { BatchName, getBatchByName } from './index.js';
 
-const configName: ConfigurationName = 'builder-docs-container';
-const configToRun = getConfigurationByName(configName);
+const batchName: BatchName = 'trpc';
+const batchConfigs = getBatchByName(batchName);
 
-if (!configToRun) {
+if (!batchConfigs || batchConfigs.length === 0) {
 	console.error(
-		`Error: Default configuration '${configName}' not found in config.ts`
+		`Error: Batch configuration '${batchName}' not found or is empty`
 	);
 	process.exit(1);
 }
 
-await crawl(configToRun);
-await write(configToRun);
+console.log(
+	`Starting batch crawl for '${batchName}' (${batchConfigs.length} configurations)`
+);
+
+for (let i = 0; i < batchConfigs.length; i++) {
+	const config = batchConfigs[i]!;
+	console.log(`\n[${i + 1}/${batchConfigs.length}] Crawling: ${config.name}`);
+
+	await crawl(config);
+	await write(config);
+
+	console.log(`[${i + 1}/${batchConfigs.length}] Completed: ${config.name}`);
+}
+
+console.log(`\nBatch crawl completed for '${batchName}'`);

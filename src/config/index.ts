@@ -1,29 +1,16 @@
-import { type NamedConfig } from '../schema';
+import { NamedConfig } from '../schema';
+import { batchConfigs } from './batch-config.js';
 
 /**
- * An array of named crawl configurations.
- * Each configuration object specifies the parameters for a crawl job.
+ * All crawl configurations in one flat array.
+ * Automatically flattens all batches from batchConfigs.
  */
-export const crawlConfigurations = [
-	{
-		name: 'builder-docs',
-		url: 'https://www.builder.io/c/docs/developers',
-		match: 'https://www.builder.io/c/docs/**',
-		selector: '.docs-builder-container',
-		maxPagesToCrawl: 50,
-		outputFileName: 'output.json',
-		maxTokens: 2000000,
-	},
-	{
-		name: 'builder-docs-container',
-		url: 'https://www.builder.io/c/docs/developers',
-		match: 'https://www.builder.io/c/docs/**',
-		selector: '.docs-builder-container',
-		maxPagesToCrawl: 50,
-		outputFileName: 'data/output.json',
-		maxTokens: 2000000,
-	},
-] as const satisfies readonly NamedConfig[];
+const crawlConfigurations = Object.values(batchConfigs).flat() as NamedConfig[];
+
+/**
+ * Union type of all available batch names.
+ */
+export type BatchName = keyof typeof batchConfigs;
 
 /**
  * Union type of all available configuration names.
@@ -40,4 +27,13 @@ export function getConfigurationByName(
 	name: ConfigurationName
 ): NamedConfig | undefined {
 	return crawlConfigurations.find((config) => config.name === name);
+}
+
+/**
+ * Retrieves a batch of crawl configurations by batch name.
+ * @param {BatchName} name - The name of the batch to retrieve.
+ * @returns {readonly NamedConfig[]} The array of configurations in the batch.
+ */
+export function getBatchByName(name: BatchName): readonly NamedConfig[] {
+	return batchConfigs[name];
 }
