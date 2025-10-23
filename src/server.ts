@@ -1,13 +1,19 @@
 import cors from 'cors';
 import { randomUUID } from 'crypto';
 import { configDotenv } from 'dotenv';
-import express, { Express } from 'express';
-import { createReadStream, PathLike } from 'fs';
+import express, { Express, NextFunction, Request, Response } from 'express';
+import { createReadStream } from 'fs';
 import { readFile, stat } from 'fs/promises';
 import swaggerUi from 'swagger-ui-express';
-import { getConfigurationByName } from './config/index.js';
-import ContextCrawlerCore from './core.js';
-import { Config } from './schema.js';
+import {
+	getAllBatchNames,
+	getAllConfigurations,
+	getConfigurationByName,
+} from './config.js';
+import { jobStore } from './job-store.js';
+import logger from './logger.js';
+import { crawlQueue } from './queue.js';
+import { Config, configSchema } from './schema.js';
 
 configDotenv();
 
@@ -30,87 +36,73 @@ app.use(
 	swaggerUi.setup(swaggerDocument) as unknown as express.RequestHandler
 );
 
-// Job management
-type JobStatus = 'pending' | 'running' | 'completed' | 'failed';
+// API Authentication middleware
+function authenticateApiKey(req: Request, res: Response, next: NextFunction) {
+	const apiKey = process.env.API_KEY;
 
-interface Job {
-	id: string;
-	status: JobStatus;
-	config: Config;
-	outputFile?: PathLike | null;
-	error?: string;
-	createdAt: Date;
-	completedAt?: Date;
-}
-
-const jobs = new Map<string, Job>();
-
-async function processJob(jobId: string) {
-	const job = jobs.get(jobId);
-	if (!job) return;
-
-	try {
-		job.status = 'running';
-		const crawler = new ContextCrawlerCore(job.config);
-		await crawler.crawl();
-		const outputFileName = await crawler.write();
-		job.outputFile = outputFileName;
-		job.status = 'completed';
-		job.completedAt = new Date();
-	} catch (error) {
-		job.status = 'failed';
-		job.error =
-			error instanceof Error ? error.message : 'Unknown error occurred';
-		job.completedAt = new Date();
-		console.error(`Job ${jobId} failed:`, error);
+	// Skip authentication if no API_KEY is configured
+	if (!apiKey) {
+		return next();
 	}
+
+	const requestApiKey = req.headers['x-api-key'];
+
+	if (!requestApiKey || requestApiKey !== apiKey) {
+		logger.warn({ path: req.path }, 'Unauthorized API access attempt');
+		return res.status(401).json({ message: 'Unauthorized' });
+	}
+
+	next();
 }
 
-// Define a POST route to accept a config name and start a crawl job
-app.post('/crawl', async (req, res) => {
-	const { name } = req.body;
+// Define a POST route to accept a config name or custom config and start a crawl job
+app.post('/crawl', authenticateApiKey, async (req, res) => {
+	const { name, config: customConfig } = req.body;
 
-	if (!name || typeof name !== 'string') {
+	let config: Config | undefined;
+
+	// Support either a named config or a custom config object
+	if (name && typeof name === 'string') {
+		config = getConfigurationByName(
+			name as Parameters<typeof getConfigurationByName>[0]
+		);
+
+		if (!config) {
+			logger.warn({ name }, 'Configuration not found');
+			return res
+				.status(404)
+				.json({ message: `Configuration with name '${name}' not found.` });
+		}
+	} else if (customConfig && typeof customConfig === 'object') {
+		// Validate custom config
+		const validationResult = configSchema.safeParse(customConfig);
+		if (!validationResult.success) {
+			logger.warn(
+				{ errors: validationResult.error.issues },
+				'Invalid custom config'
+			);
+			return res.status(400).json({
+				message: 'Invalid configuration',
+				errors: validationResult.error.issues,
+			});
+		}
+		config = validationResult.data;
+	} else {
 		return res.status(400).json({
-			message: "Invalid request body. 'name' of the configuration is required.",
+			message: "Invalid request body. Either 'name' or 'config' is required.",
 		});
-	}
-
-	const config = getConfigurationByName(
-		name as Parameters<typeof getConfigurationByName>[0]
-	);
-
-	if (!config) {
-		return res
-			.status(404)
-			.json({ message: `Configuration with name '${name}' not found.` });
 	}
 
 	try {
 		const jobId = randomUUID();
 
-		const job: Job = {
-			id: jobId,
-			status: 'pending',
-			config: config,
-			createdAt: new Date(),
-		};
+		// Create job in persistent store
+		jobStore.createJob(jobId, config);
 
-		jobs.set(jobId, job);
+		// Add job to queue
+		await crawlQueue.add('crawl', { config }, { jobId });
 
-		// Start processing in the background
-		(async () => {
-			try {
-				await processJob(jobId);
-			} catch (error) {
-				console.error(`Unhandled error in background job ${jobId}:`, error);
-				const job = jobs.get(jobId);
-				if (job) {
-					job.status = 'failed';
-					job.error = 'An unexpected error occurred during processing.';
-				}
-			}
-		})();
+		logger.info({ jobId }, 'Crawl job queued');
 
 		return res.status(202).json({
 			jobId,
@@ -119,17 +111,23 @@ app.post('/crawl', async (req, res) => {
 			resultsUrl: `/crawl/results/${jobId}`,
 		});
 	} catch (error) {
-		console.error('Error starting job:', error);
+		logger.error({ error }, 'Error starting job');
 		return res.status(500).json({ message: 'Failed to start crawl job.' });
 	}
 });
 
 // Get job status
-app.get('/crawl/status/:jobId', (req, res) => {
-	const { jobId } = req.params;
-	const job = jobs.get(jobId);
+app.get('/crawl/status/:jobId', authenticateApiKey, (req, res) => {
+	const jobId = req.params.jobId;
+
+	if (!jobId) {
+		return res.status(400).json({ message: 'Job ID is required' });
+	}
+
+	const job = jobStore.getJobById(jobId);
 
 	if (!job) {
+		logger.warn({ jobId }, 'Job not found');
 		return res.status(404).json({ message: 'Job not found' });
 	}
 
@@ -143,11 +141,17 @@ app.get('/crawl/status/:jobId', (req, res) => {
 });
 
 // Get job results
-app.get('/crawl/results/:jobId', async (req, res) => {
-	const { jobId } = req.params;
-	const job = jobs.get(jobId);
+app.get('/crawl/results/:jobId', authenticateApiKey, async (req, res) => {
+	const jobId = req.params.jobId;
+
+	if (!jobId) {
+		return res.status(400).json({ message: 'Job ID is required' });
+	}
+
+	const job = jobStore.getJobById(jobId);
 
 	if (!job) {
+		logger.warn({ jobId }, 'Job not found');
 		return res.status(404).json({ message: 'Job not found' });
 	}
 
@@ -160,6 +164,7 @@ app.get('/crawl/results/:jobId', async (req, res) => {
 	}
 
 	if (job.status === 'failed') {
+		logger.warn({ jobId, error: job.error }, 'Failed job results requested');
 		return res.status(500).json({
 			message: 'Job failed',
 			error: job.error,
@@ -167,6 +172,7 @@ app.get('/crawl/results/:jobId', async (req, res) => {
 	}
 
 	if (!job.outputFile) {
+		logger.warn({ jobId }, 'No output file generated');
 		return res.status(404).json({
 			message: 'No output file generated',
 		});
@@ -181,13 +187,33 @@ app.get('/crawl/results/:jobId', async (req, res) => {
 		const fileStream = createReadStream(job.outputFile, 'utf-8');
 		return fileStream.pipe(res);
 	} catch (error) {
-		console.error(`Error reading output file for job ${jobId}:`, error);
+		logger.error({ jobId, error }, 'Error reading output file');
 		return res.status(500).json({ message: 'Error reading output file' });
 	}
 });
 
+// Get list of available configurations
+app.get('/configurations', authenticateApiKey, async (_req, res) => {
+	try {
+		const configurations = getAllConfigurations();
+		const batches = getAllBatchNames();
+
+		return res.json({
+			configurations: configurations.map((c) => ({
+				name: c.name,
+				url: c.url,
+				outputFileName: c.outputFileName,
+			})),
+			batches,
+		});
+	} catch (error) {
+		logger.error({ error }, 'Error fetching configurations');
+		return res.status(500).json({ message: 'Error fetching configurations' });
+	}
+});
+
 app.listen(port, hostname, () => {
-	console.log(`API server listening at http://${hostname}:${port}`);
+	logger.info(`API server listening at http://${hostname}:${port}`);
 });
 
 export default app;

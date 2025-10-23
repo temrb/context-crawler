@@ -1,0 +1,8 @@
+{
+	"name": "nextjs-16-api-reference-config",
+	"url": "https://nextjs.org/docs/app/api-reference/config",
+	"match": "https://nextjs.org/docs/app/api-reference/config/**",
+	"selector": "article",
+	"maxPagesToCrawl": 500,
+	"maxTokens": 2000000
+}

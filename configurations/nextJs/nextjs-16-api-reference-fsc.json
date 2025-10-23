@@ -1,0 +1,8 @@
+{
+	"name": "nextjs-16-api-reference-fsc",
+	"url": "https://nextjs.org/docs/app/api-reference/file-conventions",
+	"match": "https://nextjs.org/docs/app/api-reference/file-conventions/**",
+	"selector": "article",
+	"maxPagesToCrawl": 500,
+	"maxTokens": 2000000
+}
