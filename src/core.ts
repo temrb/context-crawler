@@ -1,13 +1,18 @@
 // For more information, see https://crawlee.dev/
-import { Configuration, downloadListOfUrls, PlaywrightCrawler } from 'crawlee';
+import { Configuration, Dataset, downloadListOfUrls, PlaywrightCrawler } from 'crawlee';
+import { randomBytes } from 'crypto';
 import { PathLike } from 'fs';
-import { readFile, writeFile } from 'fs/promises';
-import { glob } from 'glob';
+import { mkdir, writeFile, rm } from 'fs/promises';
+import { dirname, join } from 'path';
 import { isWithinTokenLimit } from 'gpt-tokenizer';
 import { Page } from 'playwright';
-import { Config, configSchema, CrawledData } from './schema.js';
+import logger from './logger.js';
+import { Config, configSchema, CrawledData, generateOutputFileNameFromUrl } from './schema.js';
 
 let pageCounter = 0;
+
+// Internal type for configs with dataset name (required for all crawls)
+type ConfigWithDataset = Config & { datasetName: string };
 
 export function getPageHtml(page: Page, selector = 'body') {
 	return page.evaluate((selector) => {
@@ -47,10 +52,16 @@ export async function waitForXPath(page: Page, xpath: string, timeout: number) {
 	);
 }
 
-export async function crawl(config: Config) {
+export async function crawl(config: ConfigWithDataset) {
 	configSchema.parse(config);
 
 	if (process.env.NO_CRAWL !== 'true') {
+		// Create isolated storage directory for this job
+		const storageDir = config.storageDir || join(process.cwd(), 'storage', 'jobs', config.datasetName);
+
+		// Ensure storage directory exists
+		await mkdir(storageDir, { recursive: true });
+
 		// PlaywrightCrawler crawls the web using a headless
 		// browser controlled by the Playwright library.
 		const crawler = new PlaywrightCrawler(
@@ -100,6 +111,10 @@ export async function crawl(config: Config) {
 				},
 				// Comment this option to scrape the full website.
 				maxRequestsPerCrawl: config.maxPagesToCrawl,
+				// Limit concurrent requests per crawler to reduce memory usage
+				maxConcurrency: 2,
+				// Add retry configuration
+				maxRequestRetries: 2,
 				// Uncomment this option to see the browser window.
 				// headless: false,
 				preNavigationHooks: [
@@ -136,7 +151,14 @@ export async function crawl(config: Config) {
 				],
 			},
 			new Configuration({
-				purgeOnStart: true,
+				// Don't purge on start - dangerous with concurrent jobs
+				purgeOnStart: false,
+				defaultDatasetId: config.datasetName,
+				// Use isolated storage directory per job
+				persistStorage: true,
+				storageClientOptions: {
+					localDataDirectory: storageDir,
+				},
 			})
 		);
 
@@ -157,13 +179,22 @@ export async function crawl(config: Config) {
 	}
 }
 
-export async function write(config: Config): Promise<PathLike | null> {
+export async function write(config: ConfigWithDataset): Promise<PathLike | null> {
 	let nextFileNameString: PathLike | null = null;
-	const jsonFiles = await glob('storage/datasets/default/*.json', {
-		absolute: true,
-	});
 
-	console.log(`Found ${jsonFiles.length} files to combine...`);
+	// Determine storage directory
+	const storageDir = config.storageDir || join(process.cwd(), 'storage', 'jobs', config.datasetName);
+
+	// Open the dataset for this crawl with the same storage configuration
+	const dataset = await Dataset.open(config.datasetName, {
+		storageClient: new Configuration({
+			storageClientOptions: {
+				localDataDirectory: storageDir,
+			},
+		}).getStorageClient(),
+	});
+	const itemCount = (await dataset.getInfo())?.itemCount || 0;
+	logger.info({ itemCount }, `Found ${itemCount} items in dataset to process...`);
 
 	let currentResults: CrawledData[] = [];
 	let currentSize: number = 0;
@@ -176,15 +207,19 @@ export async function write(config: Config): Promise<PathLike | null> {
 		Buffer.byteLength(str, 'utf-8');
 
 	const nextFileName = (): string =>
-		`${config.outputFileName.replace(/\.json$/, '')}-${fileCounter}.json`;
+		`${config.outputFileName!.replace(/\.json$/, '')}-${fileCounter}.json`;
 
 	const writeBatchToFile = async (): Promise<void> => {
 		nextFileNameString = nextFileName();
+		// Ensure the output directory exists before writing the file
+		const dir = dirname(nextFileNameString as string);
+		await mkdir(dir, { recursive: true });
 		await writeFile(
 			nextFileNameString,
 			JSON.stringify(currentResults, null, 2)
 		);
-		console.log(
+		logger.info(
+			{ count: currentResults.length, file: nextFileNameString },
 			`Wrote ${currentResults.length} items to ${nextFileNameString}`
 		);
 		currentResults = [];
@@ -222,34 +257,95 @@ export async function write(config: Config): Promise<PathLike | null> {
 		}
 	};
 
-	// Iterate over each JSON file and process its contents.
-	for (const file of jsonFiles) {
-		const fileContent = await readFile(file, 'utf-8');
-		const data: CrawledData = JSON.parse(fileContent) as CrawledData;
+	// Process data from dataset
+	await dataset.forEach(async (item) => {
+		const data: CrawledData = item as CrawledData;
 		await addContentOrSplit(data);
-	}
+	});
 
 	// Check if any remaining data needs to be written to a file.
 	if (currentResults.length > 0) {
-		await writeBatchToFile();
+		// If this is the first and only batch, don't add a suffix
+		if (fileCounter === 1) {
+			const finalFileName = config.outputFileName!;
+			const dir = dirname(finalFileName);
+			await mkdir(dir, { recursive: true });
+			await writeFile(finalFileName, JSON.stringify(currentResults, null, 2));
+			logger.info(
+				{ count: currentResults.length, file: finalFileName },
+				`Wrote ${currentResults.length} items to ${finalFileName}`
+			);
+			nextFileNameString = finalFileName;
+		} else {
+			await writeBatchToFile();
+		}
 	}
 
 	return nextFileNameString;
 }
 
+/**
+ * Clean up storage directory for a specific job
+ */
+export async function cleanupJobStorage(datasetName: string, storageDir?: string): Promise<void> {
+	try {
+		const targetDir = storageDir || join(process.cwd(), 'storage', 'jobs', datasetName);
+
+		// Check if directory exists before attempting to remove
+		try {
+			await rm(targetDir, { recursive: true, force: true });
+			logger.debug({ storageDir: targetDir }, 'Cleaned up job storage directory');
+		} catch (error) {
+			// Ignore ENOENT errors (directory doesn't exist)
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+				throw error;
+			}
+		}
+	} catch (error) {
+		logger.warn(
+			{ datasetName, error: error instanceof Error ? error.message : error },
+			'Failed to clean up job storage'
+		);
+	}
+}
+
 class ContextCrawlerCore {
 	config: Config;
+	datasetName: string;
+	storageDir: string;
 
 	constructor(config: Config) {
-		this.config = config;
+		// Auto-generate outputFileName from URL if not provided
+		this.config = {
+			...config,
+			outputFileName: config.outputFileName || generateOutputFileNameFromUrl(config.url),
+		};
+		// Generate a unique dataset name to isolate this crawl's data
+		this.datasetName = `ds-${randomBytes(4).toString('hex')}`;
+		// Set the storage directory for this job
+		this.storageDir = join(process.cwd(), 'storage', 'jobs', this.datasetName);
 	}
 
 	async crawl() {
-		await crawl(this.config);
+		const configWithDataset: ConfigWithDataset = {
+			...this.config,
+			datasetName: this.datasetName,
+			storageDir: this.storageDir,
+		};
+		await crawl(configWithDataset);
 	}
 
 	async write(): Promise<PathLike | null> {
-		return write(this.config);
+		const configWithDataset: ConfigWithDataset = {
+			...this.config,
+			datasetName: this.datasetName,
+			storageDir: this.storageDir,
+		};
+		return write(configWithDataset);
+	}
+
+	async cleanup(): Promise<void> {
+		await cleanupJobStorage(this.datasetName, this.storageDir);
 	}
 }
 

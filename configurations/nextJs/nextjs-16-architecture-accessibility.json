@@ -1,0 +1,8 @@
+{
+	"name": "nextjs-16-architecture-accessibility",
+	"url": "https://nextjs.org/docs/architecture/accessibility",
+	"match": "https://nextjs.org/docs/architecture/accessibility/**",
+	"selector": "article",
+	"maxPagesToCrawl": 500,
+	"maxTokens": 2000000
+}

@@ -1,0 +1,8 @@
+{
+	"name": "trpc-backend-nextjs-adapter",
+	"url": "https://trpc.io/docs/server/adapters/nextjs",
+	"match": "https://trpc.io/docs/server/adapters/nextjs",
+	"selector": "article",
+	"maxPagesToCrawl": 1,
+	"maxTokens": 2000000
+}

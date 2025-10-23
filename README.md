@@ -1,6 +1,6 @@
 # Context Crawler <!-- omit from toc -->
 
-Crawl websites to generate knowledge files from one or multiple URLs.
+Crawl websites to generate knowledge files from one or multiple URLs. Built with a queue-based worker architecture for scalable, concurrent crawling.
 
 - [Features](#features)
 - [Get Started](#get-started)
@@ -16,24 +16,29 @@ Crawl websites to generate knowledge files from one or multiple URLs.
 - [Project Structure](#project-structure)
 - [Output](#output)
 - [Using the Output](#using-the-output)
+- [Architecture Overview](#architecture-overview)
+- [Utility Scripts](#utility-scripts)
 - [Contributing](#contributing)
 
 ## Features
 
+- **Queue-Based Worker Architecture**: Async job processing with persistent SQLite queue and job tracking
 - **Multiple Operating Modes**: CLI interactive mode, batch processing, and REST API server
-- **Flexible Configuration**: Named configurations with batch support for crawling multiple sites
+- **Flexible Configuration**: JSON-based configurations with auto-discovery from directory structure
+- **Concurrent Processing**: Configurable worker concurrency for parallel crawling
 - **Smart Output Management**: Automatic file splitting based on token limits and file size
 - **Sitemap Support**: Can crawl from sitemaps or individual URLs
 - **Resource Filtering**: Exclude specific resource types to optimize crawling
 - **Cookie Support**: Handle authenticated pages with cookie configuration
 - **XPath & CSS Selectors**: Extract content using either XPath or CSS selectors
+- **Structured Logging**: Pino-based logging with configurable levels
 
 ## Get Started
 
 ### Prerequisites
 
 - Node.js >= 16
-- npm or equivalent package manager
+- npm or Bun package manager
 
 ### Installation
 
@@ -48,95 +53,122 @@ cd context-crawler
 
 ```sh
 npm install
+# or
+bun install
 ```
 
 Playwright browsers will be installed automatically during the installation process.
 
 ### Configuration
 
-The project uses a centralized configuration system. Configurations are defined in `src/config/batch-config.ts`.
+The project uses a JSON-based configuration system. Configurations are stored in the `configurations/` directory, organized by batch subdirectories.
 
 #### Adding a New Configuration
 
-Open `src/config/batch-config.ts` and add your configuration to one of the existing batches or create a new batch:
+1. Create a JSON file in an appropriate batch directory (or create a new one):
 
-```ts
-const myBatch = [
-	{
-		name: 'my-crawler',
-		url: 'https://example.com/docs',
-		match: 'https://example.com/docs/**',
-		selector: 'article',
-		maxPagesToCrawl: 50,
-		outputFileName: 'data/example/output.json',
-		maxTokens: 2000000,
-	},
-] as const satisfies readonly NamedConfig[];
-
-export const batchConfigs = {
-	react,
-	nextJs,
-	trpc,
-	prisma,
-	myBatch, // Add your new batch here
-} as const;
+```sh
+mkdir -p configurations/my-batch
 ```
+
+2. Create your configuration file (e.g., `configurations/my-batch/my-crawler.json`):
+
+```json
+{
+	"name": "my-crawler",
+	"url": "https://example.com/docs",
+	"match": "https://example.com/docs/**",
+	"selector": "article",
+	"maxPagesToCrawl": 50,
+	"maxTokens": 2000000
+}
+```
+
+Configurations are automatically discovered from the directory structure. Each subdirectory in `configurations/` becomes a batch, containing one or more configuration files.
 
 ### Usage
 
 #### CLI Mode
 
-Run the crawler interactively (you'll be prompted for configuration):
+**List available configurations and batches:**
 
 ```sh
-npm start
+bun run cli -- list
 ```
 
-Or use a named configuration:
+**Run a single configuration (interactive):**
 
 ```sh
-npm run start:cli -- --config my-crawler
+bun run cli -- single
 ```
 
-Override configuration options via CLI flags:
+**Run a specific named configuration:**
 
 ```sh
-npm run start:cli -- --config my-crawler --maxPagesToCrawl 100
+bun run cli -- single --config react-19-reference
+```
+
+**Override configuration options via CLI flags:**
+
+```sh
+bun run cli -- single --config my-crawler --maxPagesToCrawl 100
 ```
 
 #### Batch Mode
 
-For processing multiple configurations sequentially, edit `src/config/main.ts`:
-
-```ts
-const batchName: BatchName = 'react'; // Change to your batch name
-```
-
-Then run:
+**Run batch crawls (interactive - choose batches and mode):**
 
 ```sh
-npm run start:dev
+bun run cli -- batch
+# or for development
+bun run dev
 ```
 
-For production:
+**Run specific batches directly:**
 
 ```sh
-npm run start:prod
+bun run cli -- batch react nextJs
 ```
+
+**Queue batches for worker processing:**
+
+```sh
+bun run cli -- batch react --queue
+```
+
+The CLI will prompt you to choose between:
+- **Run directly**: Execute crawls sequentially and wait for completion
+- **Queue for worker**: Add jobs to queue for async processing by worker
 
 #### API Server
 
-Start the REST API server:
+**Start both server and worker:**
+
+```sh
+npm start
+# or
+bun start
+```
+
+This starts:
+- API server on `http://localhost:5000` (or configured port)
+- Worker process that polls the queue for jobs
+
+**Start server only:**
 
 ```sh
 npm run start:server
 ```
 
-The server runs on `http://localhost:5000` by default (configurable via `.env`).
+**Start worker only:**
+
+```sh
+npm run start:worker
+```
 
 **API Endpoints:**
 
-- `POST /crawl` - Start a crawl job
+- `POST /crawl` - Start a crawl job (with named config)
 
   ```json
   {
@@ -144,8 +176,23 @@ The server runs on `http://localhost:5000` by default (configurable via `.env`).
   }
   ```
 
+  Or with custom config:
+
+  ```json
+  {
+  	"config": {
+  		"name": "custom-crawl",
+  		"url": "https://example.com",
+  		"match": "https://example.com/**",
+  		"selector": "article",
+  		"maxPagesToCrawl": 50
+  	}
+  }
+  ```
+
 - `GET /crawl/status/:jobId` - Check job status
 - `GET /crawl/results/:jobId` - Download results (streams JSON file)
+- `GET /configurations` - List available configurations and batches
 - `GET /api-docs` - View Swagger API documentation
 
 **Environment Configuration:**
@@ -153,59 +200,63 @@ The server runs on `http://localhost:5000` by default (configurable via `.env`).
 Copy `.env.example` to `.env` and customize:
 
 ```env
+# API Server
 API_PORT=5000
 API_HOST=localhost
-MAX_PAGES_TO_CRAWL=45
+
+# API Key (Optional - leave unset for local development)
+# API_KEY=your-secret-api-key-here
+
+# Worker Configuration
+WORKER_CONCURRENCY=2  # Number of concurrent crawl jobs
+POLL_INTERVAL_MS=1000
+MAX_POLL_INTERVAL_MS=10000
+JOB_TIMEOUT_MS=1800000  # 30 minutes
+
+# Logging
+LOG_LEVEL=info
 NODE_ENV=development
+```
+
+**API Authentication:**
+
+When `API_KEY` is set in `.env`, all API endpoints require the `X-API-KEY` header:
+
+```sh
+curl -H "X-API-KEY: your-secret-api-key-here" \
+  http://localhost:5000/crawl/status/job-id
 ```
 
 ## Configuration Options
 
-The configuration schema is defined in `src/schema.ts`. Key options include:
+The configuration schema is defined in `src/schema.ts`. All configurations are JSON files with the following options:
 
-```ts
-type Config = {
-	/** Starting URL (supports sitemaps ending in .xml) */
-	url: string;
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | `string` | ✅ | Unique identifier for this configuration |
+| `url` | `string` | ✅ | Starting URL (supports sitemaps ending in .xml) |
+| `match` | `string \| string[]` | ✅ | URL pattern(s) to match for crawling (glob format) |
+| `selector` | `string` | ✅ | CSS selector or XPath (starting with /) to extract content |
+| `maxPagesToCrawl` | `number` | ✅ | Maximum number of pages to crawl |
+| `outputFileName` | `string` | | Output file path (auto-generated from URL if not provided) |
+| `maxTokens` | `number` | | Maximum tokens per output file (will split if exceeded) |
+| `maxFileSize` | `number` | | Maximum file size in MB (will split if exceeded) |
+| `exclude` | `string \| string[]` | | URL pattern(s) to exclude from crawling |
+| `resourceExclusions` | `string[]` | | Resource types to exclude during crawl |
+| `waitForSelectorTimeout` | `number` | | Timeout for waiting for selector (ms) |
+| `cookie` | `object \| object[]` | | Cookie configuration for authenticated pages<br>`{ name: string, value: string }` |
 
-	/** Pattern to match for crawling (glob format) */
-	match: string | string[];
+**Example Configuration:**
 
-	/** CSS selector or XPath (starting with /) to extract content */
-	selector: string;
-
-	/** Maximum pages to crawl */
-	maxPagesToCrawl: number;
-
-	/** Output file path */
-	outputFileName: string;
-
-	/** Maximum tokens per output file (will split if exceeded) */
-	maxTokens?: number;
-
-	/** Maximum file size in MB (will split if exceeded) */
-	maxFileSize?: number;
-
-	/** Resource types to exclude during crawl */
-	resourceExclusions?: string[];
-
-	/** Timeout for waiting for selector (ms) */
-	waitForSelectorTimeout?: number;
-
-	/** Cookie configuration for authenticated pages */
-	cookie?:
-		| { name: string; value: string }
-		| Array<{ name: string; value: string }>;
-
-	/** URLs to exclude from crawling */
-	exclude?: string | string[];
-
-	/** Custom page visit handler */
-	onVisitPage?: (context: {
-		page: Page;
-		pushData: (data: CrawledData) => Promise<void>;
-	}) => Promise<void>;
-};
+```json
+{
+	"name": "react-19-reference",
+	"url": "https://react.dev/reference/react",
+	"match": "https://react.dev/reference/react/**",
+	"selector": "article",
+	"maxPagesToCrawl": 500,
+	"maxTokens": 2000000
+}
 ```
 
 ## Project Structure
@@ -213,22 +264,42 @@ type Config = {
 ```
 context-crawler/
 ├── src/
-│   ├── config/
-│   │   ├── batch-config.ts    # Batch crawl configurations
-│   │   ├── index.ts           # Configuration utilities
-│   │   └── main.ts            # Batch execution entry point
-│   ├── cli.ts                 # CLI interface
-│   ├── server.ts              # Express API server
-│   ├── core.ts                # Core crawling logic
-│   └── schema.ts              # Configuration schema & types
-├── data/                      # Output directory for crawled data
-├── storage/                   # Temporary crawl storage (auto-generated)
+│   ├── cli.ts                 # CLI interface with single/batch/list commands
+│   ├── server.ts              # Express REST API server
+│   ├── worker.ts              # Queue worker process
+│   ├── core.ts                # Core crawling logic (Crawlee/Playwright)
+│   ├── queue.ts               # SQLite-based job queue
+│   ├── job-store.ts           # SQLite-based job persistence
+│   ├── config.ts              # Configuration loader (auto-discovery)
+│   ├── logger.ts              # Pino structured logger
+│   └── schema.ts              # Zod configuration schema & types
+├── configurations/            # JSON configuration files
+│   ├── react/                 # React documentation configs
+│   ├── nextJs/                # Next.js documentation configs
+│   ├── trpc/                  # tRPC documentation configs
+│   └── prisma/                # Prisma documentation configs
+├── data/                      # SQLite databases
+│   ├── jobs.db                # Job tracking database
+│   └── queue.db               # Job queue database
+├── output/                    # Crawled data output (JSON files)
+├── storage/                   # Temporary crawl storage (auto-generated per job)
+├── scripts/                   # Utility scripts
+│   └── clear-queue.js         # Queue management script
 └── dist/                      # Compiled TypeScript output
 ```
 
+**Key Components:**
+
+- **CLI**: Interactive command-line interface for running crawls
+- **Server**: REST API for submitting and monitoring crawl jobs
+- **Worker**: Background process that executes queued crawl jobs
+- **Queue**: Persistent SQLite queue with retry logic and concurrency control
+- **Job Store**: Tracks job status, results, and metadata
+- **Config Loader**: Auto-discovers configurations from `configurations/` directory
+
 ## Output
 
-Crawled data is saved in JSON format. Each entry contains:
+Crawled data is saved in JSON format in the `output/` directory. Each entry contains:
 
 ```json
 {
@@ -238,15 +309,69 @@ Crawled data is saved in JSON format. Each entry contains:
 }
 ```
 
-Files are automatically split if they exceed `maxTokens` or `maxFileSize` limits, with filenames like:
+**Output File Naming:**
+
+- If `outputFileName` is specified in config, that path is used
+- Otherwise, auto-generated based on URL: `output/{domain}/{path}.json`
+
+**Automatic File Splitting:**
+
+Files are automatically split if they exceed `maxTokens` or `maxFileSize` limits:
 
 - `output-1.json`
 - `output-2.json`
 - etc.
 
+**Example Output Structure:**
+
+```
+output/
+├── react/
+│   └── reference.json
+├── nextjs/
+│   └── docs.json
+├── trpc/
+│   └── docs.json
+└── prisma/
+    └── docs.json
+```
+
 ## Using the Output
 
-The crawler generates JSON files that can be used as knowledge bases for various AI applications, chatbots, or custom assistants.
+The crawler generates JSON files that can be used as:
+- Knowledge bases for AI applications
+- Training data for chatbots
+- Context for custom assistants (Claude, ChatGPT, etc.)
+- Documentation search indices
+- Content archives
+
+## Architecture Overview
+
+Context Crawler uses a queue-based worker architecture for scalable, concurrent crawling:
+
+1. **Job Submission**: Jobs are submitted via CLI or API
+2. **Queue Storage**: Jobs are persisted in SQLite queue (`data/queue.db`)
+3. **Worker Polling**: Worker process polls queue for available jobs
+4. **Concurrent Execution**: Multiple jobs run concurrently (configurable via `WORKER_CONCURRENCY`)
+5. **Job Tracking**: Job status and results stored in `data/jobs.db`
+6. **Retry Logic**: Failed jobs are automatically retried with exponential backoff
+7. **Result Retrieval**: Results accessible via API or file system
+
+This architecture enables:
+- **Scalability**: Process multiple crawls concurrently
+- **Reliability**: Jobs persist across restarts; automatic retry on failure
+- **Monitoring**: Track job status and retrieve results via API
+- **Flexibility**: Run directly or queue for async processing
+
+## Utility Scripts
+
+**Clear the job queue:**
+
+```sh
+npm run queue:clear
+# or
+bun run queue:clear
+```
 
 ## Contributing
 

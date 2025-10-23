@@ -1,0 +1,8 @@
+{
+	"name": "nextjs-16-api-reference-fsc-metadata",
+	"url": "https://nextjs.org/docs/app/api-reference/file-conventions/metadata",
+	"match": "https://nextjs.org/docs/app/api-reference/file-conventions/metadata/**",
+	"selector": "article",
+	"maxPagesToCrawl": 500,
+	"maxTokens": 2000000
+}
