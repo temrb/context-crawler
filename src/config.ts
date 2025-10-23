@@ -4,7 +4,25 @@ import { configDotenv } from "dotenv";
 
 configDotenv();
 
-const Page: z.ZodType<Page> = z.any();
+// Define a proper interface for crawled data
+export interface CrawledData {
+  title: string;
+  url: string;
+  html: string;
+  [key: string]: unknown;
+}
+
+// Use z.custom() with a type guard for complex types like Page
+const Page: z.ZodType<Page> = z.custom<Page>((val) => {
+  // Playwright Page has these essential properties
+  return (
+    typeof val === "object" &&
+    val !== null &&
+    "goto" in val &&
+    "evaluate" in val &&
+    "title" in val
+  );
+});
 
 export const configSchema = z.object({
   /**
@@ -59,14 +77,12 @@ export const configSchema = z.object({
     .optional(),
   /** Optional function to run for each page found */
   onVisitPage: z
-    .function()
-    .args(
-      z.object({
-        page: Page,
-        pushData: z.function().args(z.any()).returns(z.promise(z.void())),
-      }),
-    )
-    .returns(z.promise(z.void()))
+    .custom<
+      (options: {
+        page: Page;
+        pushData: (data: CrawledData) => Promise<void>;
+      }) => Promise<void>
+    >()
     .optional(),
   /** Optional timeout for waiting for a selector to appear */
   waitForSelectorTimeout: z.number().int().nonnegative().optional(),
@@ -88,3 +104,7 @@ export const configSchema = z.object({
 });
 
 export type Config = z.infer<typeof configSchema>;
+
+export type NamedConfig = Config & {
+  name: string;
+};

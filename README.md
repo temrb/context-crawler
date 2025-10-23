@@ -1,13 +1,14 @@
 # GPT Crawler <!-- omit from toc -->
 
 <!-- Keep these links. Translations will automatically update with the README. -->
-[Deutsch](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=de) | 
-[Español](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=es) | 
-[français](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=fr) | 
-[日本語](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=ja) | 
-[한국어](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=ko) | 
-[Português](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=pt) | 
-[Русский](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=ru) | 
+
+[Deutsch](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=de) |
+[Español](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=es) |
+[français](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=fr) |
+[日本語](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=ja) |
+[한국어](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=ko) |
+[Português](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=pt) |
+[Русский](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=ru) |
 [中文](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=zh)
 
 Crawl a site to generate knowledge files to create your own custom GPT from one or multiple URLs
@@ -22,7 +23,6 @@ Crawl a site to generate knowledge files to create your own custom GPT from one 
     - [Configure the crawler](#configure-the-crawler)
     - [Run your crawler](#run-your-crawler)
   - [Alternative methods](#alternative-methods)
-    - [Running in a container with Docker](#running-in-a-container-with-docker)
     - [Running as an API](#running-as-an-api)
   - [Upload your data to OpenAI](#upload-your-data-to-openai)
     - [Create a custom GPT](#create-a-custom-gpt)
@@ -59,18 +59,22 @@ npm i
 
 #### Configure the crawler
 
-Open [config.ts](config.ts) and edit the `url` and `selector` properties to match your needs.
+Open [config.ts](config.ts) and add your configuration to the `crawlConfigurations` array.
 
-E.g. to crawl the Builder.io docs to make our custom GPT you can use:
+E.g. to crawl the Builder.io docs to make a custom GPT, you can add:
 
 ```ts
-export const defaultConfig: Config = {
-  url: "https://www.builder.io/c/docs/developers",
-  match: "https://www.builder.io/c/docs/**",
-  selector: `.docs-builder-container`,
-  maxPagesToCrawl: 50,
-  outputFileName: "output.json",
-};
+export const crawlConfigurations: NamedConfig[] = [
+  {
+    name: "my-crawler",
+    url: "https://www.builder.io/c/docs/developers",
+    match: "https://www.builder.io/c/docs/**",
+    selector: `.docs-builder-container`,
+    maxPagesToCrawl: 50,
+    outputFileName: "output.json",
+    maxTokens: 2000000,
+  },
+];
 ```
 
 See [config.ts](src/config.ts) for all available options. Here is a sample of the common configuration options:
@@ -102,15 +106,22 @@ type Config = {
 
 #### Run your crawler
 
+Using CLI interactively:
 ```sh
 npm start
 ```
 
+Or using a named configuration from config.ts:
+```sh
+npm start -- --config my-crawler
+```
+
+You can also override specific options via CLI flags:
+```sh
+npm start -- --config my-crawler --maxPagesToCrawl 100
+```
+
 ### Alternative methods
-
-#### [Running in a container with Docker](./containerapp/README.md)
-
-To obtain the `output.json` with a containerized execution, go into the `containerapp` directory and modify the `config.ts` as shown above. The `output.json`file should be generated in the data folder. Note: the `outputFileName` property in the `config.ts` file in the `containerapp` directory is configured to work with the container.
 
 #### Running as an API
 
