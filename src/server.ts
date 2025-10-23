@@ -6,7 +6,7 @@ import { createReadStream, PathLike } from 'fs';
 import { readFile, stat } from 'fs/promises';
 import swaggerUi from 'swagger-ui-express';
 import { getConfigurationByName } from './config/index.js';
-import GPTCrawlerCore from './core.js';
+import ContextCrawlerCore from './core.js';
 import { Config } from './schema.js';
 
 configDotenv();
@@ -51,7 +51,7 @@ async function processJob(jobId: string) {
 
 	try {
 		job.status = 'running';
-		const crawler = new GPTCrawlerCore(job.config);
+		const crawler = new ContextCrawlerCore(job.config);
 		await crawler.crawl();
 		const outputFileName = await crawler.write();
 		job.outputFile = outputFileName;

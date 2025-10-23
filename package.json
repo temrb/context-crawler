@@ -1,11 +1,11 @@
 {
-	"name": "@builder.io/gpt-crawler",
+	"name": "context-crawler",
 	"version": "1.5.1",
 	"type": "module",
 	"bin": {
-		"gpt-crawler": "./dist/src/cli.js"
+		"context-crawler": "./dist/src/cli.js"
 	},
-	"description": "Crawl a site to generate knowledge files to create your own custom GPT",
+	"description": "Crawl websites to generate knowledge files from one or multiple URLs",
 	"dependencies": {
 		"commander": "^14.0.1",
 		"cors": "^2.8.5",

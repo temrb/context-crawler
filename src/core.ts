@@ -237,7 +237,7 @@ export async function write(config: Config): Promise<PathLike | null> {
 	return nextFileNameString;
 }
 
-class GPTCrawlerCore {
+class ContextCrawlerCore {
 	config: Config;
 
 	constructor(config: Config) {
@@ -253,4 +253,4 @@ class GPTCrawlerCore {
 	}
 }
 
-export default GPTCrawlerCore;
+export default ContextCrawlerCore;
