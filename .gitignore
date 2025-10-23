@@ -7,14 +7,14 @@ apify_storage
 crawlee_storage
 storage
 .DS_Store
+.claude
+
+data
 
 !package.json
-!bun-lock.json
+!bun.lock
 !tsconfig.json
+!repomix.config.json
 
 # any output from the crawler
-*.json
 .env
-pnpm-lock.yaml
-
-*.context
