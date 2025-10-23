@@ -11,163 +11,281 @@
 [Русский](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=ru) |
 [中文](https://www.readme-i18n.com/BuilderIO/gpt-crawler?lang=zh)
 
-Crawl a site to generate knowledge files to create your own custom GPT from one or multiple URLs
+Crawl websites to generate knowledge files for creating custom GPTs from one or multiple URLs.
 
 ![Gif showing the crawl run](https://github.com/BuilderIO/gpt-crawler/assets/844291/feb8763a-152b-4708-9c92-013b5c70d2f2)
 
+- [Features](#features)
 - [Example](#example)
-- [Get started](#get-started)
-  - [Running locally](#running-locally)
-    - [Clone the repository](#clone-the-repository)
-    - [Install dependencies](#install-dependencies)
-    - [Configure the crawler](#configure-the-crawler)
-    - [Run your crawler](#run-your-crawler)
-  - [Alternative methods](#alternative-methods)
-    - [Running as an API](#running-as-an-api)
-  - [Upload your data to OpenAI](#upload-your-data-to-openai)
-    - [Create a custom GPT](#create-a-custom-gpt)
-    - [Create a custom assistant](#create-a-custom-assistant)
+- [Get Started](#get-started)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+  - [Configuration](#configuration)
+  - [Usage](#usage)
+    - [CLI Mode](#cli-mode)
+    - [Batch Mode](#batch-mode)
+    - [API Server](#api-server)
+- [Configuration Options](#configuration-options)
+- [Project Structure](#project-structure)
+- [Output](#output)
+- [Upload to OpenAI](#upload-to-openai)
+  - [Create a Custom GPT](#create-a-custom-gpt)
+  - [Create a Custom Assistant](#create-a-custom-assistant)
 - [Contributing](#contributing)
+
+## Features
+
+- **Multiple Operating Modes**: CLI interactive mode, batch processing, and REST API server
+- **Flexible Configuration**: Named configurations with batch support for crawling multiple sites
+- **Smart Output Management**: Automatic file splitting based on token limits and file size
+- **Sitemap Support**: Can crawl from sitemaps or individual URLs
+- **Resource Filtering**: Exclude specific resource types to optimize crawling
+- **Cookie Support**: Handle authenticated pages with cookie configuration
+- **XPath & CSS Selectors**: Extract content using either XPath or CSS selectors
 
 ## Example
 
-[Here is a custom GPT](https://chat.openai.com/g/g-kywiqipmR-builder-io-assistant) that I quickly made to help answer questions about how to use and integrate [Builder.io](https://www.builder.io) by simply providing the URL to the Builder docs.
+[Here is a custom GPT](https://chat.openai.com/g/g-kywiqipmR-builder-io-assistant) that demonstrates crawling the Builder.io docs to create an AI assistant.
 
-This project crawled the docs and generated the file that I uploaded as the basis for the custom GPT.
+This project crawled the documentation and generated the knowledge file used as the basis for the custom GPT.
 
-[Try it out yourself](https://chat.openai.com/g/g-kywiqipmR-builder-io-assistant) by asking questions about how to integrate Builder.io into a site.
+[Try it out yourself](https://chat.openai.com/g/g-kywiqipmR-builder-io-assistant) by asking questions about integrating Builder.io.
 
-> Note that you may need a paid ChatGPT plan to access this feature
+> Note: A paid ChatGPT plan may be required to access custom GPTs
 
-## Get started
+## Get Started
 
-### Running locally
+### Prerequisites
 
-#### Clone the repository
+- Node.js >= 16
+- npm or equivalent package manager
 
-Be sure you have Node.js >= 16 installed.
+### Installation
 
+1. Clone the repository:
 ```sh
 git clone https://github.com/builderio/gpt-crawler
+cd gpt-crawler
 ```
 
-#### Install dependencies
-
+2. Install dependencies:
 ```sh
-npm i
+npm install
 ```
 
-#### Configure the crawler
+Playwright browsers will be installed automatically during the installation process.
 
-Open [config.ts](config.ts) and add your configuration to the `crawlConfigurations` array.
+### Configuration
 
-E.g. to crawl the Builder.io docs to make a custom GPT, you can add:
+The project uses a centralized configuration system. Configurations are defined in `src/config/batch-config.ts`.
+
+#### Adding a New Configuration
+
+Open `src/config/batch-config.ts` and add your configuration to one of the existing batches or create a new batch:
 
 ```ts
-export const crawlConfigurations: NamedConfig[] = [
+const myBatch = [
   {
-    name: "my-crawler",
-    url: "https://www.builder.io/c/docs/developers",
-    match: "https://www.builder.io/c/docs/**",
-    selector: `.docs-builder-container`,
+    name: 'my-crawler',
+    url: 'https://example.com/docs',
+    match: 'https://example.com/docs/**',
+    selector: 'article',
     maxPagesToCrawl: 50,
-    outputFileName: "output.json",
+    outputFileName: 'data/example/output.json',
     maxTokens: 2000000,
   },
-];
+] as const satisfies readonly NamedConfig[];
+
+export const batchConfigs = {
+  react,
+  nextJs,
+  trpc,
+  prisma,
+  myBatch, // Add your new batch here
+} as const;
 ```
 
-See [config.ts](src/config.ts) for all available options. Here is a sample of the common configuration options:
+### Usage
 
-```ts
-type Config = {
-  /** URL to start the crawl, if sitemap is provided then it will be used instead and download all pages in the sitemap */
-  url: string;
-  /** Pattern to match against for links on a page to subsequently crawl */
-  match: string;
-  /** Selector to grab the inner text from */
-  selector: string;
-  /** Don't crawl more than this many pages */
-  maxPagesToCrawl: number;
-  /** File name for the finished data */
-  outputFileName: string;
-  /** Optional resources to exclude
-   *
-   * @example
-   * ['png','jpg','jpeg','gif','svg','css','js','ico','woff','woff2','ttf','eot','otf','mp4','mp3','webm','ogg','wav','flac','aac','zip','tar','gz','rar','7z','exe','dmg','apk','csv','xls','xlsx','doc','docx','pdf','epub','iso','dmg','bin','ppt','pptx','odt','avi','mkv','xml','json','yml','yaml','rss','atom','swf','txt','dart','webp','bmp','tif','psd','ai','indd','eps','ps','zipx','srt','wasm','m4v','m4a','webp','weba','m4b','opus','ogv','ogm','oga','spx','ogx','flv','3gp','3g2','jxr','wdp','jng','hief','avif','apng','avifs','heif','heic','cur','ico','ani','jp2','jpm','jpx','mj2','wmv','wma','aac','tif','tiff','mpg','mpeg','mov','avi','wmv','flv','swf','mkv','m4v','m4p','m4b','m4r','m4a','mp3','wav','wma','ogg','oga','webm','3gp','3g2','flac','spx','amr','mid','midi','mka','dts','ac3','eac3','weba','m3u','m3u8','ts','wpl','pls','vob','ifo','bup','svcd','drc','dsm','dsv','dsa','dss','vivo','ivf','dvd','fli','flc','flic','flic','mng','asf','m2v','asx','ram','ra','rm','rpm','roq','smi','smil','wmf','wmz','wmd','wvx','wmx','movie','wri','ins','isp','acsm','djvu','fb2','xps','oxps','ps','eps','ai','prn','svg','dwg','dxf','ttf','fnt','fon','otf','cab']
-   */
-  resourceExclusions?: string[];
-  /** Optional maximum file size in megabytes to include in the output file */
-  maxFileSize?: number;
-  /** Optional maximum number tokens to include in the output file */
-  maxTokens?: number;
-};
-```
+#### CLI Mode
 
-#### Run your crawler
-
-Using CLI interactively:
+Run the crawler interactively (you'll be prompted for configuration):
 ```sh
 npm start
 ```
 
-Or using a named configuration from config.ts:
+Or use a named configuration:
 ```sh
-npm start -- --config my-crawler
+npm run start:cli -- --config my-crawler
 ```
 
-You can also override specific options via CLI flags:
+Override configuration options via CLI flags:
 ```sh
-npm start -- --config my-crawler --maxPagesToCrawl 100
+npm run start:cli -- --config my-crawler --maxPagesToCrawl 100
 ```
 
-### Alternative methods
+#### Batch Mode
 
-#### Running as an API
+For processing multiple configurations sequentially, edit `src/config/main.ts`:
 
-To run the app as an API server you will need to do an `npm install` to install the dependencies. The server is written in Express JS.
+```ts
+const batchName: BatchName = 'react'; // Change to your batch name
+```
 
-To run the server.
+Then run:
+```sh
+npm run start:dev
+```
 
-`npm run start:server` to start the server. The server runs by default on port 3000.
+For production:
+```sh
+npm run start:prod
+```
 
-You can use the endpoint `/crawl` with the post request body of config json to run the crawler. The api docs are served on the endpoint `/api-docs` and are served using swagger.
+#### API Server
 
-To modify the environment you can copy over the `.env.example` to `.env` and set your values like port, etc. to override the variables for the server.
+Start the REST API server:
+```sh
+npm run start:server
+```
 
-### Upload your data to OpenAI
+The server runs on `http://localhost:5000` by default (configurable via `.env`).
 
-The crawl will generate a file called `output.json` at the root of this project. Upload that [to OpenAI](https://platform.openai.com/docs/assistants/overview) to create your custom assistant or custom GPT.
+**API Endpoints:**
 
-#### Create a custom GPT
+- `POST /crawl` - Start a crawl job
+  ```json
+  {
+    "name": "react-19-reference"
+  }
+  ```
 
-Use this option for UI access to your generated knowledge that you can easily share with others
+- `GET /crawl/status/:jobId` - Check job status
+- `GET /crawl/results/:jobId` - Download results (streams JSON file)
+- `GET /api-docs` - View Swagger API documentation
 
-> Note: you may need a paid ChatGPT plan to create and use custom GPTs right now
+**Environment Configuration:**
+
+Copy `.env.example` to `.env` and customize:
+```env
+API_PORT=5000
+API_HOST=localhost
+MAX_PAGES_TO_CRAWL=45
+NODE_ENV=development
+```
+
+## Configuration Options
+
+The configuration schema is defined in `src/schema.ts`. Key options include:
+
+```ts
+type Config = {
+  /** Starting URL (supports sitemaps ending in .xml) */
+  url: string;
+
+  /** Pattern to match for crawling (glob format) */
+  match: string | string[];
+
+  /** CSS selector or XPath (starting with /) to extract content */
+  selector: string;
+
+  /** Maximum pages to crawl */
+  maxPagesToCrawl: number;
+
+  /** Output file path */
+  outputFileName: string;
+
+  /** Maximum tokens per output file (will split if exceeded) */
+  maxTokens?: number;
+
+  /** Maximum file size in MB (will split if exceeded) */
+  maxFileSize?: number;
+
+  /** Resource types to exclude during crawl */
+  resourceExclusions?: string[];
+
+  /** Timeout for waiting for selector (ms) */
+  waitForSelectorTimeout?: number;
+
+  /** Cookie configuration for authenticated pages */
+  cookie?: { name: string; value: string } | Array<{ name: string; value: string }>;
+
+  /** URLs to exclude from crawling */
+  exclude?: string | string[];
+
+  /** Custom page visit handler */
+  onVisitPage?: (context: { page: Page; pushData: (data: CrawledData) => Promise<void> }) => Promise<void>;
+};
+```
+
+## Project Structure
+
+```
+gpt-crawler/
+├── src/
+│   ├── config/
+│   │   ├── batch-config.ts    # Batch crawl configurations
+│   │   ├── index.ts           # Configuration utilities
+│   │   └── main.ts            # Batch execution entry point
+│   ├── cli.ts                 # CLI interface
+│   ├── server.ts              # Express API server
+│   ├── core.ts                # Core crawling logic
+│   └── schema.ts              # Configuration schema & types
+├── data/                      # Output directory for crawled data
+├── storage/                   # Temporary crawl storage (auto-generated)
+└── dist/                      # Compiled TypeScript output
+```
+
+## Output
+
+Crawled data is saved in JSON format. Each entry contains:
+
+```json
+{
+  "title": "Page Title",
+  "url": "https://example.com/page",
+  "html": "Extracted content text..."
+}
+```
+
+Files are automatically split if they exceed `maxTokens` or `maxFileSize` limits, with filenames like:
+- `output-1.json`
+- `output-2.json`
+- etc.
+
+## Upload to OpenAI
+
+The crawler generates JSON files that can be uploaded to OpenAI for creating custom GPTs or Assistants.
+
+### Create a Custom GPT
+
+For UI-based access to your knowledge that you can share with others:
+
+> Note: Requires a paid ChatGPT plan
 
 1. Go to [https://chat.openai.com/](https://chat.openai.com/)
 2. Click your name in the bottom left corner
-3. Choose "My GPTs" in the menu
-4. Choose "Create a GPT"
+3. Select "My GPTs"
+4. Click "Create a GPT"
 5. Choose "Configure"
-6. Under "Knowledge" choose "Upload a file" and upload the file you generated
-7. if you get an error about the file being too large, you can try to split it into multiple files and upload them separately using the option maxFileSize in the config.ts file or also use tokenization to reduce the size of the file with the option maxTokens in the config.ts file
+6. Under "Knowledge", click "Upload a file" and upload your generated JSON file(s)
+7. If the file is too large, use the `maxFileSize` or `maxTokens` options to split it into multiple files
 
 ![Gif of how to upload a custom GPT](https://github.com/BuilderIO/gpt-crawler/assets/844291/22f27fb5-6ca5-4748-9edd-6bcf00b408cf)
 
-#### Create a custom assistant
+### Create a Custom Assistant
 
-Use this option for API access to your generated knowledge that you can integrate into your product.
+For API access to integrate into your products:
 
 1. Go to [https://platform.openai.com/assistants](https://platform.openai.com/assistants)
 2. Click "+ Create"
-3. Choose "upload" and upload the file you generated
+3. Choose "upload" and select your generated JSON file(s)
 
 ![Gif of how to upload to an assistant](https://github.com/BuilderIO/gpt-crawler/assets/844291/06e6ad36-e2ba-4c6e-8d5a-bf329140de49)
 
 ## Contributing
 
-Know how to make this project better? Send a PR!
+Contributions are welcome! Know how to improve this project? Send a PR!
 
 <br>
 <br>
