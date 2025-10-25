@@ -1,0 +1,6 @@
+{
+	"name": "better-auth-docs",
+	"urls": ["https://www.better-auth.com/docs/introduction"],
+	"match": "https://www.better-auth.com/docs/**",
+	"selector": "article"
+}

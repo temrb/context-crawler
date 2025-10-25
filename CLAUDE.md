@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Context Crawler is a website crawling tool that generates knowledge files from URLs. It uses a queue-based worker architecture with SQLite for persistent job storage and processing.
 
 **Key Technologies:**
+
 - TypeScript with strict mode enabled
 - Crawlee + Playwright for web crawling
 - SQLite (better-sqlite3) for queue and job persistence
@@ -17,18 +18,21 @@ Context Crawler is a website crawling tool that generates knowledge files from U
 ## Development Commands
 
 **Build:**
+
 ```bash
 bun run build         # Compile TypeScript to dist/
 bun run check         # Type-check without emitting files
 ```
 
 **Run Application:**
+
 ```bash
 # CLI modes
-bun run cli -- list                      # List available configurations
-bun run cli -- single                    # Run single config (interactive)
-bun run cli -- single --config <name>    # Run specific named config
-bun run cli -- batch                     # Run batch crawls (interactive)
+bun run cli -- list                      # List available jobs and tasks
+bun run cli -- single                    # Run single task (interactive)
+bun run cli -- single --config <name>    # Run specific named task
+bun run cli -- batch                     # Run batch jobs (interactive, with aggregation)
+bun run cli -- batch nextJs react        # Run specific jobs by name
 bun run dev                              # Same as batch mode
 
 # API server + worker
@@ -38,6 +42,7 @@ bun run start:worker                     # Start worker only
 ```
 
 **Utilities:**
+
 ```bash
 bun run queue:clear      # Clear completed/failed jobs from queue
 bun run swagger          # Generate Swagger API docs
@@ -52,15 +57,20 @@ bun run prettier:check   # Check code formatting
 ### Three-Tier Architecture
 
 1. **CLI Layer** (`src/cli.ts`): Commander-based CLI with three modes:
-   - `list`: Display available configurations and batches
-   - `single`: Run a single configuration (optionally queued)
-   - `batch`: Run multiple configurations from a batch (optionally queued)
+   - `list`: Display available jobs with task counts and all tasks
+   - `single`: Run a single task by name (optionally queued)
+   - `batch`: Run all tasks from one or more jobs with aggregation
+     - Direct mode: Executes tasks sequentially, aggregates outputs to `output/jobs/{job-name}.json`
+     - Queue mode: Adds all tasks to queue for worker processing
+     - Continues processing on task failure, logs comprehensive summary
+     - Cleans up temporary storage after aggregation
 
 2. **API Layer** (`src/server.ts`): Express REST API for:
-   - `POST /crawl`: Submit crawl jobs (by name or custom config)
+   - `POST /crawl`: Submit single crawl job (by task name or custom config)
+   - `POST /crawl/batch`: Submit entire job (queues all tasks)
    - `GET /crawl/status/:jobId`: Check job status
    - `GET /crawl/results/:jobId`: Download results (streams JSON)
-   - `GET /configurations`: List available configs
+   - `GET /configurations`: List available jobs, tasks, and legacy batches
    - Authentication via `X-API-KEY` header when `API_KEY` env var is set
 
 3. **Worker Layer** (`src/worker.ts`): Background job processor:
@@ -72,23 +82,29 @@ bun run prettier:check   # Check code formatting
 ### Core Components
 
 **Queue System** (`src/queue.ts`):
+
 - SQLite-based job queue with WAL mode for better concurrency
 - Job states: `pending` → `claimed` → `completed`/`failed`
 - Automatic retry with exponential backoff
 - Priority support and claim timeouts
 
 **Job Store** (`src/job-store.ts`):
+
 - Persists job metadata, status, and results
 - Tracks job lifecycle from submission to completion
 - Stores output file paths and error information
 
 **Configuration System** (`src/config.ts`):
-- Auto-discovers configs from `configurations/` subdirectories
-- Each subdirectory becomes a "batch" of related configs
+
+- Job-based configuration in `configurations/jobs/` directory
+- Each job file (`.json`) contains one or more tasks (crawl configurations)
+- Supports both single object and array formats in job files
+- Enforces unique task names across all jobs
 - Global config: `configurations/config.json` (maxPagesToCrawl, maxTokens)
-- Individual configs: `configurations/{batch-name}/{config-name}.json`
+- Terminology: "Job" = file in jobs/, "Task" = individual config within a job
 
 **Crawler Core** (`src/core.ts`):
+
 - Uses Crawlee's PlaywrightCrawler for robust crawling
 - Supports XPath (starting with `/`) and CSS selectors
 - Handles cookies, resource exclusions, and wait timeouts
@@ -96,6 +112,7 @@ bun run prettier:check   # Check code formatting
 - Isolated storage per job to enable concurrent crawling
 
 **Schema** (`src/schema.ts`):
+
 - Zod schemas for config validation
 - `globalConfigSchema`: Global settings (maxPagesToCrawl, maxTokens)
 - `configSchema`: Individual crawl configuration
@@ -121,11 +138,13 @@ CLI/API → Job Store → Queue → Worker → Crawler → Output Files
 ### Concurrency and Isolation
 
 **Per-Job Isolation:**
+
 - Each crawl gets unique `storageDir` (e.g., `storage/job-{uuid}`)
 - Each crawl gets unique `datasetName` (e.g., `crawl-{timestamp}-{random}`)
 - Prevents Crawlee storage conflicts during concurrent crawling
 
 **Worker Concurrency:**
+
 - Default: 2 concurrent jobs (configurable via `WORKER_CONCURRENCY`)
 - Reduced from 5 to prevent memory exhaustion and file system race conditions
 - Each job runs in isolated storage to avoid conflicts
@@ -133,6 +152,7 @@ CLI/API → Job Store → Queue → Worker → Crawler → Output Files
 ## Configuration Structure
 
 **Global Config** (`configurations/config.json`):
+
 ```json
 {
   "maxPagesToCrawl": 1000,
@@ -140,39 +160,95 @@ CLI/API → Job Store → Queue → Worker → Crawler → Output Files
 }
 ```
 
-**Individual Config** (`configurations/{batch}/{name}.json`):
+**Job Files** (`configurations/jobs/{job-name}.json`):
+
+Job files can contain either a single task or an array of tasks:
+
+**Single Task Job** (`configurations/jobs/zod.json`):
+
 ```json
 {
-  "name": "react-19-reference",
-  "url": "https://react.dev/reference/react",
-  "match": "https://react.dev/reference/react/**",
-  "selector": "article",
-  "outputFileName": "output/react/reference.json",  // optional
-  "maxFileSize": 50,                                 // optional (MB)
-  "exclude": ["**/archive/**"],                      // optional
-  "resourceExclusions": ["image", "font"],           // optional
-  "waitForSelectorTimeout": 10000,                   // optional (ms)
-  "cookie": { "name": "consent", "value": "yes" }    // optional
+  "name": "zod-docs",
+  "url": "https://zod.dev/",
+  "match": "https://zod.dev/*",
+  "selector": "article"
 }
 ```
 
-**Batch Organization:**
-- Each subdirectory in `configurations/` is a batch
-- Example batches: `react/`, `nextJs/`, `trpc/`, `prisma/`
-- Batch names used in CLI: `bun run cli -- batch react nextJs`
+**Multi-Task Job** (`configurations/jobs/nextJs.json`):
+
+```json
+[
+  {
+    "name": "nextjs-16-gs",
+    "url": "https://nextjs.org/docs/app/getting-started",
+    "match": "https://nextjs.org/docs/app/getting-started/**",
+    "selector": "article"
+  },
+  {
+    "name": "nextjs-16-api-reference",
+    "url": "https://nextjs.org/docs/app/api-reference",
+    "match": "https://nextjs.org/docs/app/api-reference/**",
+    "selector": "article"
+  }
+]
+```
+
+**Task Configuration Fields:**
+
+```json
+{
+  "name": "react-19-reference", // required, must be unique across all jobs
+  "url": "https://react.dev/reference/react", // required
+  "match": "https://react.dev/reference/react/**", // required
+  "selector": "article", // required
+  "maxFileSize": 50, // optional (MB)
+  "exclude": ["**/archive/**"], // optional
+  "resourceExclusions": ["image", "font"], // optional
+  "waitForSelectorTimeout": 10000, // optional (ms)
+  "cookie": { "name": "consent", "value": "yes" } // optional
+}
+```
+
+**Job Organization:**
+
+- All jobs defined in `configurations/jobs/` directory
+- Each `.json` file is a job (e.g., `nextJs.json`, `react.json`)
+- Job names used in CLI: `bun run cli -- batch nextJs react`
+- Output per job: `output/jobs/{job-name}.json` (aggregated from all tasks)
+
+**Migration from Legacy Structure:**
+
+- Migration script: `bun run scripts/migrate-configs.ts` (already completed)
+- All configurations now use the new job-based structure in `configurations/jobs/`
 
 ## Output Management
 
 **File Naming:**
-- If `outputFileName` specified: uses that path
-- Otherwise: auto-generated as `output/{domain}/{path}.json`
+
+- Batch jobs (direct mode): `output/jobs/{job-name}.json` (aggregated from all successful tasks)
+- Single tasks: `output/jobs/{task-name}.json` (e.g., `output/jobs/zod-docs.json`)
+- Queue mode: Each task writes to `output/jobs/{task-name}.json`
+
+**Note:** Individual task outputs during batch mode are written to temporary storage and automatically cleaned up after aggregation.
+
+**Batch Output Aggregation:**
+
+- Individual tasks write to temporary storage during batch execution
+- All successful task outputs are merged into a single array
+- Failed tasks are logged but don't prevent aggregation
+- Temporary storage directories and temp files are cleaned up after aggregation
+- Only the final aggregated file remains in `output/jobs/{job-name}.json`
+- Summary includes: X/Y tasks successful, Z failed
 
 **Automatic Splitting:**
 Files split when exceeding limits (creates numbered files: `output-1.json`, `output-2.json`, etc.):
+
 - Token limit: `maxTokens` from global config (checked with `gpt-tokenizer`)
 - File size limit: `maxFileSize` from individual config (in MB)
 
 **Output Format:**
+
 ```json
 [
   {
@@ -216,27 +292,32 @@ NODE_ENV=development
 ## Important Implementation Details
 
 **Crawlee Dataset Isolation:**
+
 - Each crawl job must have unique `datasetName` and `storageDir`
 - Generated in `src/core.ts` when not provided in config
 - Critical for concurrent job processing without data corruption
 
 **SQLite Configuration:**
+
 - WAL (Write-Ahead Logging) mode enabled for better concurrency
 - Two databases: `data/queue.db` (queue) and `data/jobs.db` (job metadata)
 - Automatic directory creation for database paths
 
 **Selector Support:**
+
 - XPath selectors: Must start with `/` (e.g., `//article[@class="content"]`)
 - CSS selectors: Everything else (e.g., `article.content`)
 - Evaluation happens in browser context via Playwright
 
 **Error Handling:**
+
 - Failed jobs retry with exponential backoff
 - Default max attempts: 3
 - Retry delay doubles each attempt (starting at `BACKOFF_DELAY_MS`)
 - Worker handles cleanup on job failure
 
 **Graceful Shutdown:**
+
 - Worker listens for SIGTERM/SIGINT
 - Completes active jobs before exiting
 - Releases claimed jobs back to queue if needed
@@ -244,6 +325,7 @@ NODE_ENV=development
 ## CLI Override Flags
 
 Any config field can be overridden via CLI:
+
 ```bash
 bun run cli -- single --config my-crawler \
   --outputFileName custom.json \

@@ -1,6 +1,0 @@
-{
-	"name": "nextjs-16-api-reference-components",
-	"url": "https://nextjs.org/docs/app/api-reference/components",
-	"match": "https://nextjs.org/docs/app/api-reference/components/**",
-	"selector": "article"
-}

@@ -1,0 +1,14 @@
+[
+	{
+		"name": "app-router",
+		"url": "https://nextjs.org/docs/app/",
+		"match": "https://nextjs.org/docs/app/**",
+		"selector": "article"
+	},
+	{
+		"name": "architecture-accessibility",
+		"url": "https://nextjs.org/docs/architecture/accessibility",
+		"match": "https://nextjs.org/docs/architecture/accessibility/**",
+		"selector": "article"
+	}
+]

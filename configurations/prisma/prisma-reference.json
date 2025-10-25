@@ -1,6 +1,0 @@
-{
-	"name": "prisma-reference",
-	"url": "https://www.prisma.io/docs/orm/reference",
-	"match": "https://www.prisma.io/docs/orm/reference/**",
-	"selector": "article"
-}

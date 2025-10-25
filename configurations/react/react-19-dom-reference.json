@@ -1,6 +1,0 @@
-{
-	"name": "react-19-dom-reference",
-	"url": "https://react.dev/reference/react-dom",
-	"match": "https://react.dev/reference/react-dom/**",
-	"selector": "article"
-}

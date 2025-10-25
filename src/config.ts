@@ -1,165 +1,204 @@
-import { readdirSync, readFileSync, statSync } from 'fs';
-import { join } from 'path';
-import { GlobalConfig, globalConfigSchema, NamedConfig } from './schema.js';
+import { readdirSync, readFileSync, statSync, existsSync } from "fs";
+import { join } from "path";
+import { GlobalConfig, globalConfigSchema, NamedConfig } from "./schema.js";
 
-const CONFIGURATIONS_DIR = './configurations';
-const GLOBAL_CONFIG_PATH = join(CONFIGURATIONS_DIR, 'config.json');
+const CONFIGURATIONS_DIR = "./configurations";
+const JOBS_DIR = join(CONFIGURATIONS_DIR, "jobs");
+const GLOBAL_CONFIG_PATH = join(CONFIGURATIONS_DIR, "config.json");
 
 /**
  * Cache for loaded configurations
  */
-let configurationsCache: NamedConfig[] | null = null;
-let batchesCache: Record<string, NamedConfig[]> | null = null;
+let tasksCache: NamedConfig[] | null = null;
+let jobsCache: Record<string, NamedConfig[]> | null = null;
 let globalConfigCache: GlobalConfig | null = null;
 
 /**
- * Recursively loads all configuration files from a directory
+ * Loads tasks from a single job file
+ * Supports both single object and array of objects
  */
-function loadConfigsFromDirectory(dirPath: string): NamedConfig[] {
-	const configs: NamedConfig[] = [];
-	const entries = readdirSync(dirPath);
+function loadTasksFromFile(filePath: string): NamedConfig[] {
+  const content = readFileSync(filePath, "utf-8");
+  const parsed = JSON.parse(content);
 
-	for (const entry of entries) {
-		const fullPath = join(dirPath, entry);
-		const stat = statSync(fullPath);
+  // Handle both single object and array formats
+  const tasks = Array.isArray(parsed) ? parsed : [parsed];
 
-		if (stat.isFile() && entry.endsWith('.json') && entry !== 'config.json') {
-			const content = readFileSync(fullPath, 'utf-8');
-			const config = JSON.parse(content);
+  // Validate that all tasks have required 'name' property
+  for (const task of tasks) {
+    if (!task.name) {
+      throw new Error(
+        `Task in file '${filePath}' is missing required 'name' property`,
+      );
+    }
+  }
 
-			// Validate that config has required 'name' property
-			if (!config.name) {
-				throw new Error(
-					`Configuration file '${entry}' is missing required 'name' property`
-				);
-			}
-
-			configs.push(config as NamedConfig);
-		} else if (stat.isDirectory()) {
-			// Recursively load configs from subdirectories
-			configs.push(...loadConfigsFromDirectory(fullPath));
-		}
-	}
-
-	return configs;
+  return tasks as NamedConfig[];
 }
 
 /**
- * Loads all configuration files from the configurations directory
+ * Loads all tasks from the jobs directory
+ * Validates that all task names are unique across all jobs
  */
-function loadAllConfigurations(): NamedConfig[] {
-	if (configurationsCache) {
-		return configurationsCache;
-	}
+function loadAllTasks(): NamedConfig[] {
+  if (tasksCache) {
+    return tasksCache;
+  }
 
-	configurationsCache = loadConfigsFromDirectory(CONFIGURATIONS_DIR);
-	return configurationsCache;
+  const tasks: NamedConfig[] = [];
+  const seenNames = new Set<string>();
+
+  if (!existsSync(JOBS_DIR)) {
+    throw new Error(
+      `Jobs directory not found at ${JOBS_DIR}. Please ensure configurations/jobs/ exists.`,
+    );
+  }
+
+  const entries = readdirSync(JOBS_DIR);
+
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) {
+      continue;
+    }
+
+    const fullPath = join(JOBS_DIR, entry);
+    const stat = statSync(fullPath);
+
+    if (stat.isFile()) {
+      const jobTasks = loadTasksFromFile(fullPath);
+
+      // Validate unique names
+      for (const task of jobTasks) {
+        if (seenNames.has(task.name)) {
+          throw new Error(
+            `Duplicate task name '${task.name}' found in ${entry}. All task names must be unique across all jobs.`,
+          );
+        }
+        seenNames.add(task.name);
+        tasks.push(task);
+      }
+    }
+  }
+
+  tasksCache = tasks;
+  return tasks;
 }
 
 /**
- * Discovers batches from subdirectories in the configurations directory
+ * Loads all job definitions (job name -> tasks mapping)
  */
-function loadBatches(): Record<string, NamedConfig[]> {
-	if (batchesCache) {
-		return batchesCache;
-	}
+function loadAllJobs(): Record<string, NamedConfig[]> {
+  if (jobsCache) {
+    return jobsCache;
+  }
 
-	batchesCache = {};
-	const entries = readdirSync(CONFIGURATIONS_DIR);
+  jobsCache = {};
 
-	for (const entry of entries) {
-		const fullPath = join(CONFIGURATIONS_DIR, entry);
-		const stat = statSync(fullPath);
+  if (!existsSync(JOBS_DIR)) {
+    throw new Error(
+      `Jobs directory not found at ${JOBS_DIR}. Please ensure configurations/jobs/ exists.`,
+    );
+  }
 
-		if (stat.isDirectory()) {
-			// Each subdirectory is a batch
-			const batchConfigs = loadConfigsFromDirectory(fullPath);
-			if (batchConfigs.length > 0) {
-				batchesCache[entry] = batchConfigs;
-			}
-		}
-	}
+  const entries = readdirSync(JOBS_DIR);
 
-	return batchesCache;
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) {
+      continue;
+    }
+
+    const fullPath = join(JOBS_DIR, entry);
+    const stat = statSync(fullPath);
+
+    if (stat.isFile()) {
+      const jobName = entry.replace(".json", "");
+      jobsCache[jobName] = loadTasksFromFile(fullPath);
+    }
+  }
+
+  return jobsCache;
 }
 
 /**
- * Union type of all available batch names.
+ * Union type of all available job names.
  */
-const batches = loadBatches();
-export type BatchName = keyof typeof batches;
+const jobs = loadAllJobs();
+export type JobName = keyof typeof jobs;
 
 /**
- * Union type of all available configuration names.
+ * Union type of all available task names.
  */
-const configurations = loadAllConfigurations();
-export type ConfigurationName = (typeof configurations)[number]['name'];
+const tasks = loadAllTasks();
+export type TaskName = (typeof tasks)[number]["name"];
+
+// ============================================================================
+// NEW API (Job/Task based)
+// ============================================================================
 
 /**
- * Retrieves a crawl configuration by its name.
- * @param {ConfigurationName} name - The name of the configuration to find.
- * @returns {NamedConfig | undefined} The found configuration object or undefined if not found.
+ * Retrieves a task by its name.
+ * @param {TaskName} name - The name of the task to find.
+ * @returns {NamedConfig | undefined} The found task or undefined if not found.
  */
-export function getConfigurationByName(
-	name: ConfigurationName
-): NamedConfig | undefined {
-	const configs = loadAllConfigurations();
-	return configs.find((config) => config.name === name);
+export function getTaskByName(name: TaskName): NamedConfig | undefined {
+  const allTasks = loadAllTasks();
+  return allTasks.find((task) => task.name === name);
 }
 
 /**
- * Retrieves a batch of crawl configurations by batch name.
- * @param {BatchName} name - The name of the batch to retrieve.
- * @returns {readonly NamedConfig[]} The array of configurations in the batch.
+ * Retrieves all tasks for a specific job.
+ * @param {JobName} jobName - The name of the job.
+ * @returns {readonly NamedConfig[]} The array of tasks in the job.
  */
-export function getBatchByName(name: BatchName): readonly NamedConfig[] {
-	const batches = loadBatches();
-	return batches[name] ?? [];
+export function getTasksByJobName(jobName: JobName): readonly NamedConfig[] {
+  const allJobs = loadAllJobs();
+  return allJobs[jobName] ?? [];
 }
 
 /**
- * Gets all available configuration names
- * @returns {string[]} Array of configuration names
+ * Gets all available task names
+ * @returns {string[]} Array of task names
  */
-export function getAllConfigurationNames(): string[] {
-	const configs = loadAllConfigurations();
-	return configs.map((config) => config.name);
+export function getAllTaskNames(): string[] {
+  const allTasks = loadAllTasks();
+  return allTasks.map((task) => task.name);
 }
 
 /**
- * Gets all available batch names
- * @returns {string[]} Array of batch names
+ * Gets all available job names
+ * @returns {string[]} Array of job names
  */
-export function getAllBatchNames(): string[] {
-	const batches = loadBatches();
-	return Object.keys(batches);
+export function getAllJobNames(): string[] {
+  const allJobs = loadAllJobs();
+  return Object.keys(allJobs);
 }
 
 /**
- * Gets all configurations
- * @returns {NamedConfig[]} Array of all configurations
+ * Gets all tasks
+ * @returns {NamedConfig[]} Array of all tasks
  */
-export function getAllConfigurations(): NamedConfig[] {
-	return loadAllConfigurations();
+export function getAllTasks(): NamedConfig[] {
+  return loadAllTasks();
 }
+
 
 /**
  * Loads the global configuration from .config.json
  * @returns {GlobalConfig} The global configuration object
  */
 export function getGlobalConfig(): GlobalConfig {
-	if (globalConfigCache) {
-		return globalConfigCache;
-	}
+  if (globalConfigCache) {
+    return globalConfigCache;
+  }
 
-	try {
-		const content = readFileSync(GLOBAL_CONFIG_PATH, 'utf-8');
-		const config = JSON.parse(content);
-		globalConfigCache = globalConfigSchema.parse(config);
-		return globalConfigCache;
-	} catch (error) {
-		throw new Error(
-			`Failed to load global configuration from ${GLOBAL_CONFIG_PATH}: ${error instanceof Error ? error.message : error}`
-		);
-	}
+  try {
+    const content = readFileSync(GLOBAL_CONFIG_PATH, "utf-8");
+    const config = JSON.parse(content);
+    globalConfigCache = globalConfigSchema.parse(config);
+    return globalConfigCache;
+  } catch (error) {
+    throw new Error(
+      `Failed to load global configuration from ${GLOBAL_CONFIG_PATH}: ${error instanceof Error ? error.message : error}`,
+    );
+  }
 }

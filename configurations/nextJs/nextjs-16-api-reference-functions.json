@@ -1,6 +1,0 @@
-{
-	"name": "nextjs-16-api-reference-functions",
-	"url": "https://nextjs.org/docs/app/api-reference/functions",
-	"match": "https://nextjs.org/docs/app/api-reference/functions/**",
-	"selector": "article"
-}

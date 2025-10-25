@@ -1,6 +1,0 @@
-{
-	"name": "nextjs-16-api-reference-directives",
-	"url": "https://nextjs.org/docs/app/api-reference/directives",
-	"match": "https://nextjs.org/docs/app/api-reference/directives/**",
-	"selector": "article"
-}
