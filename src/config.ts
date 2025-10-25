@@ -1,135 +1,61 @@
-import { readdirSync, readFileSync, statSync, existsSync } from "fs";
+import { readFileSync } from "fs";
 import { join } from "path";
+import type { JobRegistry } from "../configurations/jobs/index.js";
+import { jobs as configuredJobs } from "../configurations/jobs/index.js";
 import { GlobalConfig, globalConfigSchema, NamedConfig } from "./schema.js";
 
 const CONFIGURATIONS_DIR = "./configurations";
-const JOBS_DIR = join(CONFIGURATIONS_DIR, "jobs");
 const GLOBAL_CONFIG_PATH = join(CONFIGURATIONS_DIR, "config.json");
 
 /**
- * Cache for loaded configurations
+ * Cache for the global configuration
  */
-let tasksCache: NamedConfig[] | null = null;
-let jobsCache: Record<string, NamedConfig[]> | null = null;
 let globalConfigCache: GlobalConfig | null = null;
 
 /**
- * Loads tasks from a single job file
- * Supports both single object and array of objects
+ * All available jobs, loaded from typed configuration modules.
+ * The registry is frozen to prevent accidental mutation at runtime.
  */
-function loadTasksFromFile(filePath: string): NamedConfig[] {
-  const content = readFileSync(filePath, "utf-8");
-  const parsed = JSON.parse(content);
-
-  // Handle both single object and array formats
-  const tasks = Array.isArray(parsed) ? parsed : [parsed];
-
-  // Validate that all tasks have required 'name' property
-  for (const task of tasks) {
-    if (!task.name) {
-      throw new Error(
-        `Task in file '${filePath}' is missing required 'name' property`,
-      );
-    }
-  }
-
-  return tasks as NamedConfig[];
-}
+const jobs = Object.freeze(configuredJobs) as Readonly<JobRegistry>;
 
 /**
- * Loads all tasks from the jobs directory
- * Validates that all task names are unique across all jobs
+ * Flattened list of all tasks across every job.
+ * Performs duplicate name validation during initialization.
  */
-function loadAllTasks(): NamedConfig[] {
-  if (tasksCache) {
-    return tasksCache;
-  }
+const tasks = (() => {
+  const entries = Object.entries(jobs) as Array<
+    [keyof JobRegistry, readonly NamedConfig[]]
+  >;
 
-  const tasks: NamedConfig[] = [];
-  const seenNames = new Set<string>();
+  const seenNames = new Map<string, string>();
+  const aggregated: NamedConfig[] = [];
 
-  if (!existsSync(JOBS_DIR)) {
-    throw new Error(
-      `Jobs directory not found at ${JOBS_DIR}. Please ensure configurations/jobs/ exists.`,
-    );
-  }
-
-  const entries = readdirSync(JOBS_DIR);
-
-  for (const entry of entries) {
-    if (!entry.endsWith(".json")) {
-      continue;
-    }
-
-    const fullPath = join(JOBS_DIR, entry);
-    const stat = statSync(fullPath);
-
-    if (stat.isFile()) {
-      const jobTasks = loadTasksFromFile(fullPath);
-
-      // Validate unique names
-      for (const task of jobTasks) {
-        if (seenNames.has(task.name)) {
-          throw new Error(
-            `Duplicate task name '${task.name}' found in ${entry}. All task names must be unique across all jobs.`,
-          );
-        }
-        seenNames.add(task.name);
-        tasks.push(task);
+  for (const [jobName, jobTasks] of entries) {
+    for (const task of jobTasks) {
+      const existingJob = seenNames.get(task.name);
+      if (existingJob) {
+        throw new Error(
+          `Duplicate task name '${task.name}' found in jobs '${existingJob}' and '${String(jobName)}'. All task names must be unique across all jobs.`,
+        );
       }
+
+      seenNames.set(task.name, String(jobName));
+      aggregated.push(task);
     }
   }
 
-  tasksCache = tasks;
-  return tasks;
-}
+  return Object.freeze(aggregated) as readonly NamedConfig[];
+})();
 
-/**
- * Loads all job definitions (job name -> tasks mapping)
- */
-function loadAllJobs(): Record<string, NamedConfig[]> {
-  if (jobsCache) {
-    return jobsCache;
-  }
-
-  jobsCache = {};
-
-  if (!existsSync(JOBS_DIR)) {
-    throw new Error(
-      `Jobs directory not found at ${JOBS_DIR}. Please ensure configurations/jobs/ exists.`,
-    );
-  }
-
-  const entries = readdirSync(JOBS_DIR);
-
-  for (const entry of entries) {
-    if (!entry.endsWith(".json")) {
-      continue;
-    }
-
-    const fullPath = join(JOBS_DIR, entry);
-    const stat = statSync(fullPath);
-
-    if (stat.isFile()) {
-      const jobName = entry.replace(".json", "");
-      jobsCache[jobName] = loadTasksFromFile(fullPath);
-    }
-  }
-
-  return jobsCache;
-}
-
-/**
- * Union type of all available job names.
- */
-const jobs = loadAllJobs();
-export type JobName = keyof typeof jobs;
-
-/**
- * Union type of all available task names.
- */
-const tasks = loadAllTasks();
+export type JobName = keyof JobRegistry;
 export type TaskName = (typeof tasks)[number]["name"];
+
+const jobNames = Object.freeze(Object.keys(jobs)) as readonly JobName[];
+const taskNames = Object.freeze(
+  tasks.map((task) => task.name),
+) as readonly TaskName[];
+const jobNameSet = new Set<string>(jobNames);
+const taskNameSet = new Set<string>(taskNames);
 
 // ============================================================================
 // NEW API (Job/Task based)
@@ -140,9 +66,18 @@ export type TaskName = (typeof tasks)[number]["name"];
  * @param {TaskName} name - The name of the task to find.
  * @returns {NamedConfig | undefined} The found task or undefined if not found.
  */
-export function getTaskByName(name: TaskName): NamedConfig | undefined {
-  const allTasks = loadAllTasks();
-  return allTasks.find((task) => task.name === name);
+export function isJobName(value: string): value is JobName {
+  return jobNameSet.has(value);
+}
+
+export function isTaskName(value: string): value is TaskName {
+  return taskNameSet.has(value);
+}
+
+export function getTaskByName(name: TaskName): NamedConfig | undefined;
+export function getTaskByName(name: string): NamedConfig | undefined;
+export function getTaskByName(name: string): NamedConfig | undefined {
+  return tasks.find((task) => task.name === name);
 }
 
 /**
@@ -150,41 +85,49 @@ export function getTaskByName(name: TaskName): NamedConfig | undefined {
  * @param {JobName} jobName - The name of the job.
  * @returns {readonly NamedConfig[]} The array of tasks in the job.
  */
-export function getTasksByJobName(jobName: JobName): readonly NamedConfig[] {
-  const allJobs = loadAllJobs();
-  return allJobs[jobName] ?? [];
+export function getTasksByJobName(
+  jobName: JobName,
+): readonly NamedConfig[];
+export function getTasksByJobName(
+  jobName: string,
+): readonly NamedConfig[];
+export function getTasksByJobName(
+  jobName: string,
+): readonly NamedConfig[] {
+  if (!isJobName(jobName)) {
+    return [];
+  }
+
+  return jobs[jobName];
 }
 
 /**
- * Gets all available task names
- * @returns {string[]} Array of task names
+ * Gets all available task names.
+ * @returns {string[]} Array of task names.
  */
 export function getAllTaskNames(): string[] {
-  const allTasks = loadAllTasks();
-  return allTasks.map((task) => task.name);
+  return Array.from(taskNames);
 }
 
 /**
- * Gets all available job names
- * @returns {string[]} Array of job names
+ * Gets all available job names.
+ * @returns {string[]} Array of job names.
  */
 export function getAllJobNames(): string[] {
-  const allJobs = loadAllJobs();
-  return Object.keys(allJobs);
+  return Array.from(jobNames);
 }
 
 /**
- * Gets all tasks
- * @returns {NamedConfig[]} Array of all tasks
+ * Gets all tasks.
+ * @returns {NamedConfig[]} Array of all tasks.
  */
 export function getAllTasks(): NamedConfig[] {
-  return loadAllTasks();
+  return Array.from(tasks);
 }
 
-
 /**
- * Loads the global configuration from .config.json
- * @returns {GlobalConfig} The global configuration object
+ * Loads the global configuration from configurations/config.json.
+ * @returns {GlobalConfig} The global configuration object.
  */
 export function getGlobalConfig(): GlobalConfig {
   if (globalConfigCache) {

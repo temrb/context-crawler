@@ -160,67 +160,71 @@ CLI/API → Job Store → Queue → Worker → Crawler → Output Files
 }
 ```
 
-**Job Files** (`configurations/jobs/{job-name}.json`):
+**Job Modules** (`configurations/jobs/{job-name}.ts`):
 
-Job files can contain either a single task or an array of tasks:
+Job modules export typed tasks using the `defineJob` helper, giving you autocomplete for every field:
 
-**Single Task Job** (`configurations/jobs/zod.json`):
+**Single Task Job** (`configurations/jobs/zod.ts`):
 
-```json
-{
-  "name": "zod-docs",
-  "url": "https://zod.dev/",
-  "match": "https://zod.dev/*",
-  "selector": "article"
-}
+```ts
+import { defineJob } from "./types.js";
+
+export default defineJob({
+  name: "zod-docs",
+  urls: ["https://zod.dev"],
+  match: "https://zod.dev/**",
+  selector: "article",
+});
 ```
 
-**Multi-Task Job** (`configurations/jobs/nextJs.json`):
+**Multi-Task Job** (`configurations/jobs/next-js-16.ts`):
 
-```json
-[
+```ts
+import { defineJob } from "./types.js";
+
+export default defineJob([
   {
-    "name": "nextjs-16-gs",
-    "url": "https://nextjs.org/docs/app/getting-started",
-    "match": "https://nextjs.org/docs/app/getting-started/**",
-    "selector": "article"
+    name: "nextjs-16-gs",
+    urls: ["https://nextjs.org/docs/app/getting-started"],
+    match: "https://nextjs.org/docs/app/getting-started/**",
+    selector: "article",
   },
   {
-    "name": "nextjs-16-api-reference",
-    "url": "https://nextjs.org/docs/app/api-reference",
-    "match": "https://nextjs.org/docs/app/api-reference/**",
-    "selector": "article"
-  }
-]
+    name: "nextjs-16-api-reference",
+    urls: ["https://nextjs.org/docs/app/api-reference"],
+    match: "https://nextjs.org/docs/app/api-reference/**",
+    selector: "article",
+  },
+]);
 ```
 
 **Task Configuration Fields:**
 
-```json
-{
-  "name": "react-19-reference", // required, must be unique across all jobs
-  "url": "https://react.dev/reference/react", // required
-  "match": "https://react.dev/reference/react/**", // required
-  "selector": "article", // required
-  "maxFileSize": 50, // optional (MB)
-  "exclude": ["**/archive/**"], // optional
-  "resourceExclusions": ["image", "font"], // optional
-  "waitForSelectorTimeout": 10000, // optional (ms)
-  "cookie": { "name": "consent", "value": "yes" } // optional
-}
+```ts
+defineJob({
+  name: "react-19-reference", // required, must be unique across all jobs
+  urls: ["https://react.dev/reference/react"], // required
+  match: "https://react.dev/reference/**", // required
+  selector: "article", // required
+  maxFileSize: 50, // optional (MB)
+  exclude: ["**/archive/**"], // optional
+  resourceExclusions: ["image", "font"], // optional
+  waitForSelectorTimeout: 10000, // optional (ms)
+  cookie: { name: "consent", value: "yes" }, // optional
+});
 ```
 
 **Job Organization:**
 
 - All jobs defined in `configurations/jobs/` directory
-- Each `.json` file is a job (e.g., `nextJs.json`, `react.json`)
+- Each `.ts` module exports a job (e.g., `next-js-16.ts`, `react-19.ts`)
 - Job names used in CLI: `bun run cli -- batch nextJs react`
 - Output per job: `output/jobs/{job-name}.json` (aggregated from all tasks)
 
 **Migration from Legacy Structure:**
 
 - Migration script: `bun run scripts/migrate-configs.ts` (already completed)
-- All configurations now use the new job-based structure in `configurations/jobs/`
+- All configurations now use the typed job modules in `configurations/jobs/`
 
 ## Output Management
 
