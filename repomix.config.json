@@ -27,7 +27,7 @@
 			"includeLogsCount": 50
 		}
 	},
-	"include": ["src", "configurations"],
+	"include": ["output/jobs"],
 	"ignore": {
 		"useGitignore": true,
 		"useDefaultPatterns": true,
