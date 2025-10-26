@@ -1,16 +1,13 @@
-import { readFileSync } from "fs";
-import { join } from "path";
-import type { JobRegistry } from "../configurations/jobs/index.js";
-import { jobs as configuredJobs } from "../configurations/jobs/index.js";
-import { GlobalConfig, globalConfigSchema, NamedConfig } from "./schema.js";
-
-const CONFIGURATIONS_DIR = "./configurations";
-const GLOBAL_CONFIG_PATH = join(CONFIGURATIONS_DIR, "config.json");
+import type { JobRegistry } from "../configurations/index.js";
+import { jobs as configuredJobs } from "../configurations/index.js";
+import { globalConfig } from "../configurations/global.config.js";
+import { NamedConfig } from "./schema.js";
 
 /**
- * Cache for the global configuration
+ * Global configuration for the crawler.
+ * Edit configurations/global.config.ts to modify these values.
  */
-let globalConfigCache: GlobalConfig | null = null;
+export { globalConfig };
 
 /**
  * All available jobs, loaded from typed configuration modules.
@@ -123,25 +120,4 @@ export function getAllJobNames(): string[] {
  */
 export function getAllTasks(): NamedConfig[] {
   return Array.from(tasks);
-}
-
-/**
- * Loads the global configuration from configurations/config.json.
- * @returns {GlobalConfig} The global configuration object.
- */
-export function getGlobalConfig(): GlobalConfig {
-  if (globalConfigCache) {
-    return globalConfigCache;
-  }
-
-  try {
-    const content = readFileSync(GLOBAL_CONFIG_PATH, "utf-8");
-    const config = JSON.parse(content);
-    globalConfigCache = globalConfigSchema.parse(config);
-    return globalConfigCache;
-  } catch (error) {
-    throw new Error(
-      `Failed to load global configuration from ${GLOBAL_CONFIG_PATH}: ${error instanceof Error ? error.message : error}`,
-    );
-  }
 }

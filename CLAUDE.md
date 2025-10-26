@@ -97,10 +97,10 @@ bun run prettier:check   # Check code formatting
 **Configuration System** (`src/config.ts`):
 
 - Job-based configuration in `configurations/jobs/` directory
-- Each job file (`.json`) contains one or more tasks (crawl configurations)
+- Each job file (`.ts`) contains one or more tasks (crawl configurations)
 - Supports both single object and array formats in job files
 - Enforces unique task names across all jobs
-- Global config: `configurations/config.json` (maxPagesToCrawl, maxTokens)
+- Global config & job registry: `configurations/index.ts` (auto-generated)
 - Terminology: "Job" = file in jobs/, "Task" = individual config within a job
 
 **Crawler Core** (`src/core.ts`):
@@ -151,14 +151,27 @@ CLI/API → Job Store → Queue → Worker → Crawler → Output Files
 
 ## Configuration Structure
 
-**Global Config** (`configurations/config.json`):
+**Global Config & Job Registry** (`configurations/index.ts`):
 
-```json
-{
-  "maxPagesToCrawl": 1000,
-  "maxTokens": 2000000
-}
+This file is **auto-generated** by `scripts/generate-job-index.ts` and contains both:
+- Global configuration (maxPagesToCrawl, maxTokens)
+- Registry of all available jobs
+
+```typescript
+// AUTO-GENERATED - DO NOT EDIT
+export const globalConfig = {
+  maxPagesToCrawl: 1000,
+  maxTokens: 2000000,
+} satisfies GlobalConfig;
+
+export const jobs = {
+  'ai-sdk': aiSdk,
+  'better-auth': betterAuth,
+  // ... all job files auto-discovered
+} satisfies Record<string, JobTasks>;
 ```
+
+To modify global config values, edit `scripts/generate-job-index.ts` (lines 86-88).
 
 **Job Modules** (`configurations/jobs/{job-name}.ts`):
 

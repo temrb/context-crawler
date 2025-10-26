@@ -1,8 +1,8 @@
-import { defineJob } from "./types.js";
+import { defineJob } from '../types.js';
 
 export default defineJob({
-  name: "better-auth-docs",
-  urls: ["https://www.better-auth.com/docs/introduction"],
-  match: "https://www.better-auth.com/docs/**",
-  selector: "article",
+	name: 'better-auth-docs',
+	entry: 'https://www.better-auth.com/docs/introduction',
+	match: 'https://www.better-auth.com/docs/**',
+	selector: 'article',
 });
