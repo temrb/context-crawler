@@ -5,11 +5,11 @@ import { randomUUID } from 'crypto';
 import inquirer from 'inquirer';
 import { createRequire } from 'node:module';
 import {
-	getAllBatchNames,
-	getAllConfigurationNames,
-	getBatchByName,
-	getConfigurationByName,
-	type BatchName,
+	getAllJobNames,
+	getAllTaskNames,
+	getTaskByName,
+	getTasksByJobName,
+	type JobName,
 } from './config.js';
 import ContextCrawlerCore from './core.js';
 import { jobStore } from './job-store.js';
@@ -21,7 +21,7 @@ const require = createRequire(import.meta.url);
 const { version, description } = require('../../package.json');
 
 const messages = {
-	url: 'What is the first URL of the website you want to crawl?',
+	urls: 'Enter starting URLs (comma-separated for multiple):',
 	match: 'What is the URL pattern you want to match?',
 	selector: 'What is the CSS selector you want to match?',
 	outputFileName: 'What is the name of the output file?',
@@ -34,35 +34,27 @@ async function handler(cliOptions: Partial<Config> & { config?: string }) {
 
 		// Load configuration from file if a name is provided
 		if (cliOptions.config) {
-			const namedConfig = getConfigurationByName(
-				cliOptions.config as Parameters<typeof getConfigurationByName>[0]
-			);
+			const namedConfig = getTaskByName(cliOptions.config);
 			if (!namedConfig) {
 				logger.error(
 					{ config: cliOptions.config },
-					`Configuration '${cliOptions.config}' not found`
+					`Task '${cliOptions.config}' not found`
 				);
-				logger.info(
-					`Available configurations: ${getAllConfigurationNames().join(', ')}`
-				);
+				logger.info(`Available tasks: ${getAllTaskNames().join(', ')}`);
 				process.exit(1);
 			}
 			config = { ...namedConfig };
 		} else {
 			// If no config is specified, prompt the user to select one
-			const availableConfigs = getAllConfigurationNames();
-			if (availableConfigs.length > 0) {
-				const configAnswer = await inquirer.prompt({
+			const availableTasks = getAllTaskNames();
+			if (availableTasks.length > 0) {
+				const taskAnswer = await inquirer.prompt({
 					type: 'list',
-					name: 'configName',
-					message: 'Select a configuration:',
-					choices: availableConfigs,
+					name: 'taskName',
+					message: 'Select a task:',
+					choices: availableTasks,
 				});
-				const namedConfig = getConfigurationByName(
-					configAnswer.configName as Parameters<
-						typeof getConfigurationByName
-					>[0]
-				);
+				const namedConfig = getTaskByName(taskAnswer.taskName);
 				if (namedConfig) {
 					config = { ...namedConfig };
 				}
@@ -76,22 +68,34 @@ async function handler(cliOptions: Partial<Config> & { config?: string }) {
 				key !== 'config' &&
 				key in configSchema.shape
 			) {
-				config[key as keyof Config] = cliOptions[
-					key as keyof typeof cliOptions
-				] as any;
+				let value = cliOptions[key as keyof typeof cliOptions];
+
+				// Special handling for urls - parse comma-separated string
+				if (key === 'urls' && typeof value === 'string') {
+					value = value
+						.split(',')
+						.map((url: string) => url.trim())
+						.filter((url: string) => url.length > 0) as any;
+				}
+
+				config[key as keyof Config] = value as any;
 			}
 		});
 
-		if (!config.url || !config.match || !config.selector) {
+		if (!config.entry || !config.match || !config.selector) {
 			const answers: Partial<Config> = {};
 
-			if (!config.url) {
-				const urlAnswer = await inquirer.prompt({
+			if (!config.entry) {
+				const urlsAnswer = await inquirer.prompt({
 					type: 'input',
-					name: 'url',
-					message: messages.url,
+					name: 'urls',
+					message: messages.urls,
 				});
-				answers.url = urlAnswer.url;
+				// Parse comma-separated URLs into array
+				answers.entry = urlsAnswer.urls
+					.split(',')
+					.map((url: string) => url.trim())
+					.filter((url: string) => url.length > 0);
 			}
 
 			if (!config.match) {
@@ -138,10 +142,11 @@ program
 	.command('single')
 	.description('Crawl a single configuration')
 	.option('-c, --config <string>', messages.config)
-	.option('-u, --url <string>', messages.url)
+	.option('-u, --urls <string>', messages.urls)
 	.option('-m, --match <string>', messages.match)
 	.option('-s, --selector <string>', messages.selector)
 	.option('-o, --outputFileName <string>', messages.outputFileName)
+	.option('--no-auto-discover-nav', 'Disable automatic navigation discovery')
 	.action(handler);
 
 // Batch crawl command
@@ -152,50 +157,47 @@ program
 	.action(async (names: string[], options: { queue?: boolean }) => {
 		let selectedBatches: string[];
 
-		// If no batch names provided, show interactive picker
+		// If no job names provided, show interactive picker
 		if (!names || names.length === 0) {
-			const availableBatches = getAllBatchNames();
-			if (availableBatches.length === 0) {
-				logger.error('No batches found in configurations');
+			const availableJobs = getAllJobNames();
+			if (availableJobs.length === 0) {
+				logger.error('No jobs found in configurations');
 				process.exit(1);
 			}
 
-			const batchChoices = availableBatches.map((name) => {
-				const count = getBatchByName(name as BatchName).length;
+			const jobChoices = availableJobs.map((name) => {
+				const count = getTasksByJobName(name as JobName).length;
 				return {
-					name: `${name} (${count} ${count === 1 ? 'config' : 'configs'})`,
+					name: `${name} (${count} ${count === 1 ? 'task' : 'tasks'})`,
 					value: name,
 				};
 			});
 
-			const batchAnswer = await inquirer.prompt({
+			const jobAnswer = await inquirer.prompt({
 				type: 'checkbox',
-				name: 'batches',
-				message: 'Select batches to crawl:',
-				choices: batchChoices,
+				name: 'jobs',
+				message: 'Select jobs to crawl:',
+				choices: jobChoices,
 				validate: (answer) => {
 					if ((answer as unknown as string[]).length === 0) {
-						return 'You must select at least one batch';
+						return 'You must select at least one job';
 					}
 					return true;
 				},
 			});
 
-			selectedBatches = batchAnswer.batches;
+			selectedBatches = jobAnswer.jobs;
 		} else {
 			selectedBatches = names;
 		}
 
-		// Validate all selected batches exist
+		// Validate all selected jobs exist
 		for (const name of selectedBatches) {
-			const batchConfigs = getBatchByName(name as BatchName);
-			if (!batchConfigs || batchConfigs.length === 0) {
-				logger.error(
-					{ batch: name },
-					`Batch configuration '${name}' not found or is empty`
-				);
-				const availableBatches = getAllBatchNames();
-				logger.info(`Available batches: ${availableBatches.join(', ')}`);
+			const jobTasks = getTasksByJobName(name as JobName);
+			if (!jobTasks || jobTasks.length === 0) {
+				logger.error({ job: name }, `Job '${name}' not found or is empty`);
+				const availableJobs = getAllJobNames();
+				logger.info(`Available jobs: ${availableJobs.join(', ')}`);
 				process.exit(1);
 			}
 		}
@@ -221,25 +223,25 @@ program
 			useQueue = modeAnswer.mode === 'queue';
 		}
 
-		// Collect all configs from selected batches
-		const allConfigs: Array<{ batchName: string; config: NamedConfig }> = [];
-		for (const batchName of selectedBatches) {
-			const batchConfigs = getBatchByName(batchName as BatchName);
-			for (const config of batchConfigs) {
-				allConfigs.push({ batchName, config });
+		// Collect all tasks from selected jobs
+		const allConfigs: Array<{ jobName: string; config: NamedConfig }> = [];
+		for (const jobName of selectedBatches) {
+			const jobTasks = getTasksByJobName(jobName as JobName);
+			for (const config of jobTasks) {
+				allConfigs.push({ jobName, config });
 			}
 		}
 
 		logger.info(
 			{
-				batches: selectedBatches.join(', '),
-				totalConfigs: allConfigs.length,
+				jobs: selectedBatches.join(', '),
+				totalTasks: allConfigs.length,
 				mode: useQueue ? 'queue' : 'direct',
 			},
 			`Starting crawl for ${selectedBatches.length} ${
-				selectedBatches.length === 1 ? 'batch' : 'batches'
+				selectedBatches.length === 1 ? 'job' : 'jobs'
 			} (${allConfigs.length} total ${
-				allConfigs.length === 1 ? 'config' : 'configs'
+				allConfigs.length === 1 ? 'task' : 'tasks'
 			})`
 		);
 
@@ -273,35 +275,234 @@ program
 			logger.info('Worker will process these jobs asynchronously');
 			logger.info('Check job status via API: GET /crawl/status/{jobId}');
 		} else {
-			// Direct mode: run each config sequentially
+			// Direct mode: run each task sequentially with aggregation per job
+			const jobResults: Record<
+				string,
+				{
+					successful: Array<{ config: NamedConfig; outputFile: string | null }>;
+					failed: Array<{ config: NamedConfig; error: string }>;
+					crawlers: ContextCrawlerCore[];
+				}
+			> = {};
+
+			// Initialize job results tracking
+			for (const jobName of selectedBatches) {
+				jobResults[jobName] = {
+					successful: [],
+					failed: [],
+					crawlers: [],
+				};
+			}
+
+			// Execute all tasks
 			for (let i = 0; i < allConfigs.length; i++) {
-				const { batchName, config } = allConfigs[i]!;
+				const { jobName, config } = allConfigs[i]!;
 				logger.info(
 					{
 						progress: `${i + 1}/${allConfigs.length}`,
-						batch: batchName,
-						config: config.name,
+						job: jobName,
+						task: config.name,
 					},
-					`Crawling: ${config.name} (from ${batchName})`
+					`Crawling: ${config.name} (from ${jobName})`
 				);
 
-				const crawler = new ContextCrawlerCore(config);
-				await crawler.crawl();
-				await crawler.write();
+				try {
+					// For batch mode, write to temp storage instead of final output
+					const { join } = await import('path');
+					const tempOutputPath = join(
+						process.cwd(),
+						'storage',
+						'temp',
+						`${config.name}-${Date.now()}.json`
+					);
+					const tempConfig = { ...config, outputFileName: tempOutputPath };
+					const crawler = new ContextCrawlerCore(tempConfig);
+					jobResults[jobName]!.crawlers.push(crawler);
+
+					await crawler.crawl();
+					const outputFile = await crawler.write();
+
+					jobResults[jobName]!.successful.push({
+						config,
+						outputFile: outputFile ? outputFile.toString() : null,
+					});
+
+					logger.info(
+						{
+							progress: `${i + 1}/${allConfigs.length}`,
+							job: jobName,
+							task: config.name,
+						},
+						`Completed: ${config.name}`
+					);
+				} catch (error) {
+					const errorMessage =
+						error instanceof Error ? error.message : 'Unknown error';
+
+					jobResults[jobName]!.failed.push({
+						config,
+						error: errorMessage,
+					});
+
+					logger.error(
+						{
+							progress: `${i + 1}/${allConfigs.length}`,
+							job: jobName,
+							task: config.name,
+							error: errorMessage,
+						},
+						`Failed: ${config.name}`
+					);
+				}
+			}
+
+			// Aggregate results for each job
+			for (const jobName of selectedBatches) {
+				const results = jobResults[jobName]!;
+				const successCount = results.successful.length;
+				const failCount = results.failed.length;
+				const totalCount = successCount + failCount;
 
 				logger.info(
+					{ job: jobName, successCount, failCount, totalCount },
+					`Job '${jobName}' completed: ${successCount}/${totalCount} successful, ${failCount} failed`
+				);
+
+				// Aggregate successful outputs into single file
+				if (successCount > 0) {
+					try {
+						const aggregatedData: unknown[] = [];
+						const tempFilesRead: string[] = [];
+
+						// Read all successful output files
+						for (const { outputFile } of results.successful) {
+							if (outputFile) {
+								const { readFileSync, existsSync } = await import('fs');
+
+								// Check if file exists before reading
+								if (!existsSync(outputFile)) {
+									logger.warn(
+										{ job: jobName, file: outputFile },
+										`Temp file not found: ${outputFile}`
+									);
+									continue;
+								}
+
+								const content = readFileSync(outputFile, 'utf-8');
+								const data = JSON.parse(content);
+								tempFilesRead.push(outputFile);
+
+								// Handle both array and single object
+								if (Array.isArray(data)) {
+									aggregatedData.push(...data);
+								} else {
+									aggregatedData.push(data);
+								}
+							}
+						}
+
+						logger.info(
+							{
+								job: jobName,
+								tempFilesFound: tempFilesRead.length,
+								tempFilesExpected: results.successful.filter(
+									(r) => r.outputFile
+								).length,
+							},
+							`Read ${tempFilesRead.length} temp files for job '${jobName}'`
+						);
+
+						// Only write output if we have data
+						if (aggregatedData.length > 0) {
+							// Write aggregated output
+							const aggregatedOutputPath = `output/jobs/${jobName}.json`;
+							const { writeFileSync, mkdirSync } = await import('fs');
+							const { dirname } = await import('path');
+							mkdirSync(dirname(aggregatedOutputPath), { recursive: true });
+							writeFileSync(
+								aggregatedOutputPath,
+								JSON.stringify(aggregatedData, null, 2)
+							);
+
+							logger.info(
+								{
+									job: jobName,
+									itemCount: aggregatedData.length,
+									outputFile: aggregatedOutputPath,
+								},
+								`Aggregated ${aggregatedData.length} items to ${aggregatedOutputPath}`
+							);
+						} else {
+							logger.info(
+								{ job: jobName },
+								`Skipping output file creation for '${jobName}' - no items crawled`
+							);
+						}
+					} catch (error) {
+						logger.error(
+							{
+								job: jobName,
+								error: error instanceof Error ? error.message : error,
+							},
+							`Failed to aggregate outputs for job '${jobName}'`
+						);
+					}
+				} else {
+					logger.info(
+						{ job: jobName },
+						`Skipping aggregation for '${jobName}' - no successful tasks`
+					);
+				}
+
+				// Clean up temporary storage directories
+				for (const crawler of results.crawlers) {
+					try {
+						await crawler.cleanup();
+					} catch (error) {
+						logger.warn(
+							{
+								error: error instanceof Error ? error.message : error,
+							},
+							'Failed to cleanup crawler storage'
+						);
+					}
+				}
+			}
+
+			// Clean up temp output directory after ALL batches are aggregated
+			try {
+				const { rm } = await import('fs/promises');
+				const { join } = await import('path');
+				const tempDir = join(process.cwd(), 'storage', 'temp');
+				await rm(tempDir, { recursive: true, force: true });
+				logger.debug({ tempDir }, 'Cleaned up temp output directory');
+			} catch (error) {
+				logger.warn(
 					{
-						progress: `${i + 1}/${allConfigs.length}`,
-						batch: batchName,
-						config: config.name,
+						error: error instanceof Error ? error.message : error,
 					},
-					`Completed: ${config.name}`
+					'Failed to cleanup temp output directory'
 				);
 			}
 
+			// Final summary
+			const totalSuccessful = Object.values(jobResults).reduce(
+				(sum, r) => sum + r.successful.length,
+				0
+			);
+			const totalFailed = Object.values(jobResults).reduce(
+				(sum, r) => sum + r.failed.length,
+				0
+			);
+
 			logger.info(
-				{ batches: selectedBatches.join(', ') },
-				`Batch crawl completed for: ${selectedBatches.join(', ')}`
+				{
+					jobs: selectedBatches.join(', '),
+					totalSuccessful,
+					totalFailed,
+					total: allConfigs.length,
+				},
+				`All jobs completed: ${totalSuccessful}/${allConfigs.length} successful, ${totalFailed} failed`
 			);
 		}
 	});
@@ -309,20 +510,40 @@ program
 // List command
 program
 	.command('list')
-	.description('List all available configurations and batches')
+	.description('List all available jobs and tasks')
 	.action(() => {
-		const configurations = getAllConfigurationNames();
-		const batches = getAllBatchNames();
+		const {
+			getAllJobNames,
+			getTasksByJobName,
+			getAllTaskNames,
+		} = require('./config.js');
 
-		console.log('\nAvailable Configurations:');
-		configurations.forEach((name) => {
-			console.log(`  - ${name}`);
-		});
+		const jobNames = getAllJobNames();
+		const taskNames = getAllTaskNames();
 
-		console.log('\nAvailable Batches:');
-		batches.forEach((name) => {
-			console.log(`  - ${name}`);
-		});
+		console.log('\nAvailable Jobs:');
+		if (jobNames.length === 0) {
+			console.log('  (none found)');
+		} else {
+			jobNames.forEach((jobName: string) => {
+				const tasks = getTasksByJobName(jobName);
+				const taskCount = tasks.length;
+				console.log(
+					`  - ${jobName} (${taskCount} ${taskCount === 1 ? 'task' : 'tasks'})`
+				);
+			});
+		}
+
+		console.log('\nAll Available Tasks:');
+		if (taskNames.length === 0) {
+			console.log('  (none found)');
+		} else {
+			taskNames.forEach((name: string) => {
+				console.log(`  - ${name}`);
+			});
+		}
+
+		console.log();
 	});
 
 program.parse();

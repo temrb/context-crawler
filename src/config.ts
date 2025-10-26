@@ -1,165 +1,123 @@
-import { readdirSync, readFileSync, statSync } from 'fs';
-import { join } from 'path';
-import { GlobalConfig, globalConfigSchema, NamedConfig } from './schema.js';
-
-const CONFIGURATIONS_DIR = './configurations';
-const GLOBAL_CONFIG_PATH = join(CONFIGURATIONS_DIR, 'config.json');
+import type { JobRegistry } from "../configurations/index.js";
+import { jobs as configuredJobs } from "../configurations/index.js";
+import { globalConfig } from "../configurations/global.config.js";
+import { NamedConfig } from "./schema.js";
 
 /**
- * Cache for loaded configurations
+ * Global configuration for the crawler.
+ * Edit configurations/global.config.ts to modify these values.
  */
-let configurationsCache: NamedConfig[] | null = null;
-let batchesCache: Record<string, NamedConfig[]> | null = null;
-let globalConfigCache: GlobalConfig | null = null;
+export { globalConfig };
 
 /**
- * Recursively loads all configuration files from a directory
+ * All available jobs, loaded from typed configuration modules.
+ * The registry is frozen to prevent accidental mutation at runtime.
  */
-function loadConfigsFromDirectory(dirPath: string): NamedConfig[] {
-	const configs: NamedConfig[] = [];
-	const entries = readdirSync(dirPath);
+const jobs = Object.freeze(configuredJobs) as Readonly<JobRegistry>;
 
-	for (const entry of entries) {
-		const fullPath = join(dirPath, entry);
-		const stat = statSync(fullPath);
+/**
+ * Flattened list of all tasks across every job.
+ * Performs duplicate name validation during initialization.
+ */
+const tasks = (() => {
+  const entries = Object.entries(jobs) as Array<
+    [keyof JobRegistry, readonly NamedConfig[]]
+  >;
 
-		if (stat.isFile() && entry.endsWith('.json') && entry !== 'config.json') {
-			const content = readFileSync(fullPath, 'utf-8');
-			const config = JSON.parse(content);
+  const seenNames = new Map<string, string>();
+  const aggregated: NamedConfig[] = [];
 
-			// Validate that config has required 'name' property
-			if (!config.name) {
-				throw new Error(
-					`Configuration file '${entry}' is missing required 'name' property`
-				);
-			}
+  for (const [jobName, jobTasks] of entries) {
+    for (const task of jobTasks) {
+      const existingJob = seenNames.get(task.name);
+      if (existingJob) {
+        throw new Error(
+          `Duplicate task name '${task.name}' found in jobs '${existingJob}' and '${String(jobName)}'. All task names must be unique across all jobs.`,
+        );
+      }
 
-			configs.push(config as NamedConfig);
-		} else if (stat.isDirectory()) {
-			// Recursively load configs from subdirectories
-			configs.push(...loadConfigsFromDirectory(fullPath));
-		}
-	}
+      seenNames.set(task.name, String(jobName));
+      aggregated.push(task);
+    }
+  }
 
-	return configs;
+  return Object.freeze(aggregated) as readonly NamedConfig[];
+})();
+
+export type JobName = keyof JobRegistry;
+export type TaskName = (typeof tasks)[number]["name"];
+
+const jobNames = Object.freeze(Object.keys(jobs)) as readonly JobName[];
+const taskNames = Object.freeze(
+  tasks.map((task) => task.name),
+) as readonly TaskName[];
+const jobNameSet = new Set<string>(jobNames);
+const taskNameSet = new Set<string>(taskNames);
+
+// ============================================================================
+// NEW API (Job/Task based)
+// ============================================================================
+
+/**
+ * Retrieves a task by its name.
+ * @param {TaskName} name - The name of the task to find.
+ * @returns {NamedConfig | undefined} The found task or undefined if not found.
+ */
+export function isJobName(value: string): value is JobName {
+  return jobNameSet.has(value);
+}
+
+export function isTaskName(value: string): value is TaskName {
+  return taskNameSet.has(value);
+}
+
+export function getTaskByName(name: TaskName): NamedConfig | undefined;
+export function getTaskByName(name: string): NamedConfig | undefined;
+export function getTaskByName(name: string): NamedConfig | undefined {
+  return tasks.find((task) => task.name === name);
 }
 
 /**
- * Loads all configuration files from the configurations directory
+ * Retrieves all tasks for a specific job.
+ * @param {JobName} jobName - The name of the job.
+ * @returns {readonly NamedConfig[]} The array of tasks in the job.
  */
-function loadAllConfigurations(): NamedConfig[] {
-	if (configurationsCache) {
-		return configurationsCache;
-	}
+export function getTasksByJobName(
+  jobName: JobName,
+): readonly NamedConfig[];
+export function getTasksByJobName(
+  jobName: string,
+): readonly NamedConfig[];
+export function getTasksByJobName(
+  jobName: string,
+): readonly NamedConfig[] {
+  if (!isJobName(jobName)) {
+    return [];
+  }
 
-	configurationsCache = loadConfigsFromDirectory(CONFIGURATIONS_DIR);
-	return configurationsCache;
+  return jobs[jobName];
 }
 
 /**
- * Discovers batches from subdirectories in the configurations directory
+ * Gets all available task names.
+ * @returns {string[]} Array of task names.
  */
-function loadBatches(): Record<string, NamedConfig[]> {
-	if (batchesCache) {
-		return batchesCache;
-	}
-
-	batchesCache = {};
-	const entries = readdirSync(CONFIGURATIONS_DIR);
-
-	for (const entry of entries) {
-		const fullPath = join(CONFIGURATIONS_DIR, entry);
-		const stat = statSync(fullPath);
-
-		if (stat.isDirectory()) {
-			// Each subdirectory is a batch
-			const batchConfigs = loadConfigsFromDirectory(fullPath);
-			if (batchConfigs.length > 0) {
-				batchesCache[entry] = batchConfigs;
-			}
-		}
-	}
-
-	return batchesCache;
+export function getAllTaskNames(): string[] {
+  return Array.from(taskNames);
 }
 
 /**
- * Union type of all available batch names.
+ * Gets all available job names.
+ * @returns {string[]} Array of job names.
  */
-const batches = loadBatches();
-export type BatchName = keyof typeof batches;
-
-/**
- * Union type of all available configuration names.
- */
-const configurations = loadAllConfigurations();
-export type ConfigurationName = (typeof configurations)[number]['name'];
-
-/**
- * Retrieves a crawl configuration by its name.
- * @param {ConfigurationName} name - The name of the configuration to find.
- * @returns {NamedConfig | undefined} The found configuration object or undefined if not found.
- */
-export function getConfigurationByName(
-	name: ConfigurationName
-): NamedConfig | undefined {
-	const configs = loadAllConfigurations();
-	return configs.find((config) => config.name === name);
+export function getAllJobNames(): string[] {
+  return Array.from(jobNames);
 }
 
 /**
- * Retrieves a batch of crawl configurations by batch name.
- * @param {BatchName} name - The name of the batch to retrieve.
- * @returns {readonly NamedConfig[]} The array of configurations in the batch.
+ * Gets all tasks.
+ * @returns {NamedConfig[]} Array of all tasks.
  */
-export function getBatchByName(name: BatchName): readonly NamedConfig[] {
-	const batches = loadBatches();
-	return batches[name] ?? [];
-}
-
-/**
- * Gets all available configuration names
- * @returns {string[]} Array of configuration names
- */
-export function getAllConfigurationNames(): string[] {
-	const configs = loadAllConfigurations();
-	return configs.map((config) => config.name);
-}
-
-/**
- * Gets all available batch names
- * @returns {string[]} Array of batch names
- */
-export function getAllBatchNames(): string[] {
-	const batches = loadBatches();
-	return Object.keys(batches);
-}
-
-/**
- * Gets all configurations
- * @returns {NamedConfig[]} Array of all configurations
- */
-export function getAllConfigurations(): NamedConfig[] {
-	return loadAllConfigurations();
-}
-
-/**
- * Loads the global configuration from .config.json
- * @returns {GlobalConfig} The global configuration object
- */
-export function getGlobalConfig(): GlobalConfig {
-	if (globalConfigCache) {
-		return globalConfigCache;
-	}
-
-	try {
-		const content = readFileSync(GLOBAL_CONFIG_PATH, 'utf-8');
-		const config = JSON.parse(content);
-		globalConfigCache = globalConfigSchema.parse(config);
-		return globalConfigCache;
-	} catch (error) {
-		throw new Error(
-			`Failed to load global configuration from ${GLOBAL_CONFIG_PATH}: ${error instanceof Error ? error.message : error}`
-		);
-	}
+export function getAllTasks(): NamedConfig[] {
+  return Array.from(tasks);
 }

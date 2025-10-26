@@ -22,8 +22,8 @@ const Page: z.ZodType<Page> = z.custom<Page>((val) => {
 });
 
 export const globalConfigSchema = z.object({
-	maxPagesToCrawl: z.number(),
-	maxTokens: z.number(),
+	maxPagesToCrawl: z.union([z.number(), z.literal('unlimited')]),
+	maxTokens: z.union([z.number(), z.literal('unlimited')]),
 });
 
 export type GlobalConfig = z.infer<typeof globalConfigSchema>;
@@ -31,17 +31,37 @@ export type GlobalConfig = z.infer<typeof globalConfigSchema>;
 export const configSchema = z.object({
 	/**
 	 * Unique identifier for this configuration
-	 * Must match the name used in batches.json
 	 */
 	name: z.string(),
-	url: z.string(),
+	/**
+	 * Single entry point URL that seeds the crawler
+	 */
+	entry: z.string().url(),
+	/**
+	 * URL patterns to match for recursive crawling
+	 */
 	match: z.union([z.string(), z.array(z.string())]),
 	exclude: z.union([z.string(), z.array(z.string())]).optional(),
 	selector: z.string(),
 	/**
+	 * Automatically discover navigation links before crawling
+	 * When enabled, extracts all links from navigation elements and uses them as seed URLs
+	 * @default true
+	 */
+	autoDiscoverNav: z.boolean().optional().default(true),
+	/**
+	 * CSS selector(s) for navigation elements to extract links from during discovery
+	 * Only used when autoDiscoverNav is true
+	 * @default "nav, aside, [role='navigation']"
+	 */
+	discoverySelector: z
+		.string()
+		.optional()
+		.default("nav, aside, [role='navigation']"),
+	/**
 	 * File name for the finished data
-	 * If not provided, will be auto-generated from the URL
-	 * @default Auto-generated from URL
+	 * If not provided, will be auto-generated from the task name
+	 * @default Auto-generated from task name
 	 */
 	outputFileName: z.string().optional(),
 	/** Optional cookie to be set. E.g. for Cookie Consent */
@@ -76,6 +96,7 @@ export const configSchema = z.object({
 });
 
 export type Config = z.infer<typeof configSchema>;
+export type ConfigInput = z.input<typeof configSchema>;
 
 export type NamedConfig = Config;
 
@@ -96,7 +117,8 @@ export function generateNameFromUrl(url: string): string {
 			.filter((segment) => segment.length > 0);
 
 		// Combine domain and first path segment only
-		const parts = pathSegments.length > 0 ? [domain, pathSegments[0]] : [domain];
+		const parts =
+			pathSegments.length > 0 ? [domain, pathSegments[0]] : [domain];
 		return parts.join('-').toLowerCase();
 	} catch (error) {
 		// Fallback to a simple sanitized version of the URL
@@ -109,28 +131,10 @@ export function generateNameFromUrl(url: string): string {
 }
 
 /**
- * Generates an output file path from a URL
- * @example "https://nextjs.org/docs/app/api-reference/components" → "output/nextjs/docs.json"
+ * Generates an output file path from a task name
+ * @example "zod-docs" → "output/jobs/zod-docs.json"
+ * @example "nextjs-16-gs" → "output/jobs/nextjs-16-gs.json"
  */
-export function generateOutputFileNameFromUrl(url: string): string {
-	try {
-		const urlObj = new URL(url);
-
-		// Extract domain name (remove TLD and www)
-		const domain = urlObj.hostname.replace(/^www\./, '').split('.')[0];
-
-		// Extract only the first path segment (ignore query params and fragments)
-		const pathSegments = urlObj.pathname
-			.split('/')
-			.filter((segment) => segment.length > 0);
-
-		// Build the output path: output/{domain}/{first-path-segment}.json or output/{domain}/docs.json
-		const parts = pathSegments.length > 0
-			? ['output', domain, pathSegments[0]]
-			: ['output', domain, 'docs'];
-		return parts.join('/') + '.json';
-	} catch (error) {
-		// Fallback to simple output.json
-		return 'output/output.json';
-	}
+export function generateOutputFileName(taskName: string): string {
+	return `output/jobs/${taskName}.json`;
 }

@@ -6,9 +6,10 @@ import { createReadStream } from 'fs';
 import { readFile, stat } from 'fs/promises';
 import swaggerUi from 'swagger-ui-express';
 import {
-	getAllBatchNames,
-	getAllConfigurations,
-	getConfigurationByName,
+	getAllJobNames,
+	getAllTasks,
+	getTaskByName,
+	getTasksByJobName,
 } from './config.js';
 import { jobStore } from './job-store.js';
 import logger from './logger.js';
@@ -61,17 +62,15 @@ app.post('/crawl', authenticateApiKey, async (req, res) => {
 
 	let config: Config | undefined;
 
-	// Support either a named config or a custom config object
+	// Support either a named task or a custom config object
 	if (name && typeof name === 'string') {
-		config = getConfigurationByName(
-			name as Parameters<typeof getConfigurationByName>[0]
-		);
+		config = getTaskByName(name);
 
 		if (!config) {
-			logger.warn({ name }, 'Configuration not found');
+			logger.warn({ name }, 'Task not found');
 			return res
 				.status(404)
-				.json({ message: `Configuration with name '${name}' not found.` });
+				.json({ message: `Task with name '${name}' not found.` });
 		}
 	} else if (customConfig && typeof customConfig === 'object') {
 		// Validate custom config
@@ -113,6 +112,77 @@ app.post('/crawl', authenticateApiKey, async (req, res) => {
 	} catch (error) {
 		logger.error({ error }, 'Error starting job');
 		return res.status(500).json({ message: 'Failed to start crawl job.' });
+	}
+});
+
+// Define a POST route to queue an entire batch of jobs
+app.post('/crawl/batch', authenticateApiKey, async (req, res) => {
+	const { name } = req.body;
+
+	if (!name || typeof name !== 'string') {
+		return res.status(400).json({
+			message: "Invalid request body. 'name' (job name) is required.",
+		});
+	}
+
+	// Get all tasks for this job
+	const tasks = getTasksByJobName(name);
+
+	if (!tasks || tasks.length === 0) {
+		logger.warn({ jobName: name }, 'Job not found or has no tasks');
+		return res.status(404).json({
+			message: `Job with name '${name}' not found or has no tasks.`,
+			availableJobs: getAllJobNames(),
+		});
+	}
+
+	try {
+		const queuedTasks: Array<{
+			configName: string;
+			jobId: string;
+			statusUrl: string;
+			resultsUrl: string;
+		}> = [];
+
+		// Queue each task
+		for (const task of tasks) {
+			const jobId = randomUUID();
+
+			// Create job in persistent store
+			jobStore.createJob(jobId, task);
+
+			// Add job to queue
+			await crawlQueue.add('crawl', { config: task }, { jobId });
+
+			queuedTasks.push({
+				configName: task.name,
+				jobId,
+				statusUrl: `/crawl/status/${jobId}`,
+				resultsUrl: `/crawl/results/${jobId}`,
+			});
+
+			logger.info(
+				{ jobId, configName: task.name },
+				'Task queued for batch job'
+			);
+		}
+
+		logger.info(
+			{ jobName: name, taskCount: queuedTasks.length },
+			`Batch job '${name}' queued with ${queuedTasks.length} tasks`
+		);
+
+		return res.status(202).json({
+			message: `Batch job '${name}' queued with ${queuedTasks.length} ${
+				queuedTasks.length === 1 ? 'task' : 'tasks'
+			}.`,
+			jobName: name,
+			taskCount: queuedTasks.length,
+			tasks: queuedTasks,
+		});
+	} catch (error) {
+		logger.error({ error, jobName: name }, 'Error queuing batch job');
+		return res.status(500).json({ message: 'Failed to queue batch job.' });
 	}
 });
 
@@ -195,16 +265,29 @@ app.get('/crawl/results/:jobId', authenticateApiKey, async (req, res) => {
 // Get list of available configurations
 app.get('/configurations', authenticateApiKey, async (_req, res) => {
 	try {
-		const configurations = getAllConfigurations();
-		const batches = getAllBatchNames();
+		const jobNames = getAllJobNames();
+		const allTasks = getAllTasks();
+
+		// Build job details with task counts
+		const jobs = jobNames.map((jobName) => {
+			const tasks = getTasksByJobName(jobName);
+			return {
+				name: jobName,
+				taskCount: tasks.length,
+				tasks: tasks.map((t) => ({
+					name: t.name,
+					urls: t.entry,
+				})),
+			};
+		});
 
 		return res.json({
-			configurations: configurations.map((c) => ({
-				name: c.name,
-				url: c.url,
-				outputFileName: c.outputFileName,
+			jobs,
+			tasks: allTasks.map((t) => ({
+				name: t.name,
+				urls: t.entry,
+				outputFileName: t.outputFileName,
 			})),
-			batches,
 		});
 	} catch (error) {
 		logger.error({ error }, 'Error fetching configurations');
