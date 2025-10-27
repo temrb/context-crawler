@@ -13,14 +13,14 @@ export interface TaskResult {
  * Execute a single crawl task with error handling
  * Centralizes task execution logic shared between worker and CLI
  */
-export async function runTask(config: Config): Promise<TaskResult> {
+export async function runTask(config: Config, jobName: string): Promise<TaskResult> {
 	let crawler: ContextCrawlerCore | null = null;
 
 	try {
-		logger.info({ task: config.name }, `Starting task: ${config.name}`);
+		logger.info({ job: jobName }, `Starting job: ${jobName}`);
 
 		// Instantiate the crawler
-		crawler = new ContextCrawlerCore(config);
+		crawler = new ContextCrawlerCore(config, jobName);
 
 		// Run the crawl
 		await crawler.crawl();
@@ -32,8 +32,8 @@ export async function runTask(config: Config): Promise<TaskResult> {
 		await crawler.cleanup();
 
 		logger.info(
-			{ task: config.name, outputFile },
-			`Task completed: ${config.name}`
+			{ job: jobName, outputFile },
+			`Job completed: ${jobName}`
 		);
 
 		return {
@@ -45,8 +45,8 @@ export async function runTask(config: Config): Promise<TaskResult> {
 			error instanceof Error ? error.message : 'Unknown error occurred';
 
 		logger.error(
-			{ task: config.name, error: errorMessage },
-			`Task failed: ${config.name}`
+			{ job: jobName, error: errorMessage },
+			`Job failed: ${jobName}`
 		);
 
 		// Clean up storage on error
@@ -56,7 +56,7 @@ export async function runTask(config: Config): Promise<TaskResult> {
 			} catch (cleanupError) {
 				logger.warn(
 					{
-						task: config.name,
+						job: jobName,
 						error:
 							cleanupError instanceof Error
 								? cleanupError.message

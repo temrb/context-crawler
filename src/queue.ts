@@ -6,6 +6,7 @@ import { Config } from "./schema.js";
 // Define the job data interface
 export interface CrawlJobData {
   config: Config;
+  jobName: string;
 }
 
 export interface QueueJobOptions {

@@ -1,7 +1,6 @@
 import { defineJob } from '../types.js';
 
 export default defineJob({
-	name: 'zod-docs',
 	entry: 'https://zod.dev',
 	match: [
 		'https://zod.dev/basics',

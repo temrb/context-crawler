@@ -14,11 +14,6 @@ export type { OnVisitPageHook };
  */
 export interface JobConfig extends ConfigInput {
 	/**
-	 * Stable identifier for this crawl configuration.
-	 * Doubles as the dataset name and part of the generated output filename.
-	 */
-	name: ConfigInput['name'];
-	/**
 	 * Single entry point URL that seeds the crawler.
 	 * This URL is queued first before dynamic discovery kicks in.
 	 */

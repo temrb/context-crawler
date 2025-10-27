@@ -10,7 +10,7 @@ import { PathLike } from 'fs';
 import { mkdir, rm, writeFile } from 'fs/promises';
 import { isWithinTokenLimit } from 'gpt-tokenizer';
 import { minimatch } from 'minimatch';
-import { basename, dirname, join } from 'path';
+import { basename, dirname, isAbsolute, join } from 'path';
 import { Page } from 'playwright';
 import { globalConfig } from './config.js';
 import logger from './logger.js';
@@ -512,14 +512,21 @@ class ContextCrawlerCore {
 	config: Config;
 	datasetName: string;
 	storageDir: string;
+	jobName: string;
 
-	constructor(config: Config) {
+	constructor(config: Config, jobName: string) {
+		this.jobName = jobName;
+
 		// Sanitize outputFileName to prevent path traversal attacks
+		// Allow absolute paths (for temp files in batch mode)
+		// Sanitize relative paths to output/jobs directory
 		const sanitizedFileName = config.outputFileName
-			? join('output/jobs', basename(config.outputFileName))
-			: generateOutputFileName(config.name);
+			? isAbsolute(config.outputFileName)
+				? config.outputFileName  // Allow absolute paths (e.g., temp directory)
+				: join('output/jobs', basename(config.outputFileName))  // Sanitize relative paths
+			: generateOutputFileName(jobName);  // Default from job name
 
-		// Auto-generate outputFileName from task name if not provided
+		// Auto-generate outputFileName from job name if not provided
 		this.config = {
 			...config,
 			outputFileName: sanitizedFileName,

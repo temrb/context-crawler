@@ -1,7 +1,6 @@
 import { defineJob } from '../types.js';
 
 export default defineJob({
-	name: 'ai-sdk',
 	entry: 'https://ai-sdk.dev/docs/foundations/overview',
 	match: [
 		'https://ai-sdk.dev/docs/foundations/**',

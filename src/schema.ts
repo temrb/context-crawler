@@ -45,10 +45,6 @@ export type GlobalConfig = z.infer<typeof globalConfigSchema>;
 
 export const configSchema = z.object({
 	/**
-	 * Unique identifier for this configuration
-	 */
-	name: z.string(),
-	/**
 	 * Single entry point URL that seeds the crawler
 	 */
 	entry: z.string().url(),
@@ -75,8 +71,8 @@ export const configSchema = z.object({
 		.default("nav, aside, [role='navigation']"),
 	/**
 	 * File name for the finished data
-	 * If not provided, will be auto-generated from the task name
-	 * @default Auto-generated from task name
+	 * If not provided, will be auto-generated from the job name
+	 * @default Auto-generated from job name
 	 */
 	outputFileName: z.string().optional(),
 	/** Optional cookie to be set. E.g. for Cookie Consent */
@@ -150,10 +146,10 @@ export function generateNameFromUrl(url: string): string {
 }
 
 /**
- * Generates an output file path from a task name
- * @example "zod-docs" → "output/jobs/zod-docs.json"
- * @example "nextjs-16-gs" → "output/jobs/nextjs-16-gs.json"
+ * Generates an output file path from a job name
+ * @example "zod" → "output/jobs/zod.json"
+ * @example "next-js-16" → "output/jobs/next-js-16.json"
  */
-export function generateOutputFileName(taskName: string): string {
-	return `output/jobs/${taskName}.json`;
+export function generateOutputFileName(jobName: string): string {
+	return `output/jobs/${jobName}.json`;
 }

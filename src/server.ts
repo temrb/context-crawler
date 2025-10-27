@@ -7,14 +7,12 @@ import { readFile, stat } from 'fs/promises';
 import swaggerUi from 'swagger-ui-express';
 import {
 	getAllJobNames,
-	getAllTasks,
-	getTaskByName,
-	getTasksByJobName,
+	getJobConfigs,
 } from './config.js';
 import { jobStore } from './job-store.js';
 import logger from './logger.js';
 import { crawlQueue } from './queue.js';
-import { Config, configSchema } from './schema.js';
+import { Config, configSchema, generateOutputFileName } from './schema.js';
 
 configDotenv();
 
@@ -56,22 +54,30 @@ function authenticateApiKey(req: Request, res: Response, next: NextFunction) {
 	next();
 }
 
-// Define a POST route to accept a config name or custom config and start a crawl job
+// Define a POST route to accept a job name or custom config and start a crawl job
 app.post('/crawl', authenticateApiKey, async (req, res) => {
 	const { name, config: customConfig } = req.body;
 
 	let config: Config | undefined;
+	let jobName: string | undefined;
 
-	// Support either a named task or a custom config object
+	// Support either a named job or a custom config object
 	if (name && typeof name === 'string') {
-		config = getTaskByName(name);
+		const configs = getJobConfigs(name);
 
-		if (!config) {
-			logger.warn({ name }, 'Task not found');
+		if (!configs || configs.length === 0) {
+			logger.warn({ name }, 'Job not found');
 			return res
 				.status(404)
-				.json({ message: `Task with name '${name}' not found.` });
+				.json({ message: `Job with name '${name}' not found.` });
 		}
+
+		// For job-based requests, we'll queue each config separately
+		// but they all belong to the same job
+		jobName = name;
+
+		// Use the first config as the primary one (or could iterate through all)
+		config = configs[0];
 	} else if (customConfig && typeof customConfig === 'object') {
 		// Validate custom config
 		const validationResult = configSchema.safeParse(customConfig);
@@ -86,25 +92,38 @@ app.post('/crawl', authenticateApiKey, async (req, res) => {
 			});
 		}
 		config = validationResult.data;
+		jobName = 'custom';  // Use 'custom' as the job name for ad-hoc configs
 	} else {
 		return res.status(400).json({
-			message: "Invalid request body. Either 'name' or 'config' is required.",
+			message: "Invalid request body. Either 'name' (job name) or 'config' is required.",
 		});
 	}
 
 	try {
 		const jobId = randomUUID();
 
+		// Ensure we have both config and jobName
+		if (!config || !jobName) {
+			throw new Error('Config or job name is missing');
+		}
+
+		// Add output filename
+		const configWithFileName: Config = {
+			...config,
+			outputFileName: generateOutputFileName(jobName),
+		};
+
 		// Create job in persistent store
-		jobStore.createJob(jobId, config);
+		jobStore.createJob(jobId, configWithFileName);
 
 		// Add job to queue
-		await crawlQueue.add('crawl', { config }, { jobId });
+		await crawlQueue.add('crawl', { config: configWithFileName, jobName }, { jobId });
 
-		logger.info({ jobId }, 'Crawl job queued');
+		logger.info({ jobId, jobName }, 'Crawl job queued');
 
 		return res.status(202).json({
 			jobId,
+			jobName,
 			message: 'Crawl job started',
 			statusUrl: `/crawl/status/${jobId}`,
 			resultsUrl: `/crawl/results/${jobId}`,
@@ -125,60 +144,67 @@ app.post('/crawl/batch', authenticateApiKey, async (req, res) => {
 		});
 	}
 
-	// Get all tasks for this job
-	const tasks = getTasksByJobName(name);
+	// Get all configs for this job
+	const configs = getJobConfigs(name);
 
-	if (!tasks || tasks.length === 0) {
-		logger.warn({ jobName: name }, 'Job not found or has no tasks');
+	if (!configs || configs.length === 0) {
+		logger.warn({ jobName: name }, 'Job not found or has no configs');
 		return res.status(404).json({
-			message: `Job with name '${name}' not found or has no tasks.`,
+			message: `Job with name '${name}' not found or has no configs.`,
 			availableJobs: getAllJobNames(),
 		});
 	}
 
 	try {
-		const queuedTasks: Array<{
-			configName: string;
+		const queuedConfigs: Array<{
+			configIndex: number;
 			jobId: string;
 			statusUrl: string;
 			resultsUrl: string;
 		}> = [];
 
-		// Queue each task
-		for (const task of tasks) {
+		// Queue each config
+		for (let i = 0; i < configs.length; i++) {
+			const config = configs[i]!;
 			const jobId = randomUUID();
 
+			// Add output filename
+			const configWithFileName = {
+				...config,
+				outputFileName: generateOutputFileName(name),
+			};
+
 			// Create job in persistent store
-			jobStore.createJob(jobId, task);
+			jobStore.createJob(jobId, configWithFileName);
 
 			// Add job to queue
-			await crawlQueue.add('crawl', { config: task }, { jobId });
+			await crawlQueue.add('crawl', { config: configWithFileName, jobName: name }, { jobId });
 
-			queuedTasks.push({
-				configName: task.name,
+			queuedConfigs.push({
+				configIndex: i,
 				jobId,
 				statusUrl: `/crawl/status/${jobId}`,
 				resultsUrl: `/crawl/results/${jobId}`,
 			});
 
 			logger.info(
-				{ jobId, configName: task.name },
-				'Task queued for batch job'
+				{ jobId, jobName: name, configIndex: i },
+				'Config queued for batch job'
 			);
 		}
 
 		logger.info(
-			{ jobName: name, taskCount: queuedTasks.length },
-			`Batch job '${name}' queued with ${queuedTasks.length} tasks`
+			{ jobName: name, configCount: queuedConfigs.length },
+			`Batch job '${name}' queued with ${queuedConfigs.length} configs`
 		);
 
 		return res.status(202).json({
-			message: `Batch job '${name}' queued with ${queuedTasks.length} ${
-				queuedTasks.length === 1 ? 'task' : 'tasks'
+			message: `Batch job '${name}' queued with ${queuedConfigs.length} ${
+				queuedConfigs.length === 1 ? 'config' : 'configs'
 			}.`,
 			jobName: name,
-			taskCount: queuedTasks.length,
-			tasks: queuedTasks,
+			configCount: queuedConfigs.length,
+			configs: queuedConfigs,
 		});
 	} catch (error) {
 		logger.error({ error, jobName: name }, 'Error queuing batch job');
@@ -266,28 +292,19 @@ app.get('/crawl/results/:jobId', authenticateApiKey, async (req, res) => {
 app.get('/configurations', authenticateApiKey, async (_req, res) => {
 	try {
 		const jobNames = getAllJobNames();
-		const allTasks = getAllTasks();
 
-		// Build job details with task counts
+		// Build job details with config counts
 		const jobs = jobNames.map((jobName) => {
-			const tasks = getTasksByJobName(jobName);
+			const configs = getJobConfigs(jobName);
 			return {
 				name: jobName,
-				taskCount: tasks.length,
-				tasks: tasks.map((t) => ({
-					name: t.name,
-					urls: t.entry,
-				})),
+				configCount: configs.length,
+				outputFileName: generateOutputFileName(jobName),
 			};
 		});
 
 		return res.json({
 			jobs,
-			tasks: allTasks.map((t) => ({
-				name: t.name,
-				urls: t.entry,
-				outputFileName: t.outputFileName,
-			})),
 		});
 	} catch (error) {
 		logger.error({ error }, 'Error fetching configurations');

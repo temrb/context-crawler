@@ -25,12 +25,13 @@ let currentPollInterval = POLL_INTERVAL_MS;
  * Process a single crawl job from the queue
  */
 async function processCrawlJob(job: QueueJob): Promise<void> {
-  const { config } = job.data;
+  const { config, jobName } = job.data;
   const { jobId } = job;
 
   logger.info(
     {
       jobId,
+      jobName,
       queueJobId: job.id,
       attempt: job.attempts,
       maxAttempts: job.maxAttempts,
@@ -43,7 +44,7 @@ async function processCrawlJob(job: QueueJob): Promise<void> {
     jobStore.updateJobStatus(jobId, "running");
 
     // Execute the task using shared runner
-    const result = await runTask(config);
+    const result = await runTask(config, jobName || 'unknown');
 
     if (result.success) {
       // Mark queue job as completed

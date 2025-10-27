@@ -1,7 +1,6 @@
 import { defineJob } from '../types.js';
 
 export default defineJob({
-	name: 'polar-sh',
 	entry: 'https://polar.sh/docs',
 	match: [
 		'https://polar.sh/docs/features/**',
