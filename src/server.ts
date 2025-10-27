@@ -295,8 +295,63 @@ app.get('/configurations', authenticateApiKey, async (_req, res) => {
 	}
 });
 
-app.listen(port, hostname, () => {
+const server = app.listen(port, hostname, () => {
 	logger.info(`API server listening at http://${hostname}:${port}`);
+});
+
+// Graceful shutdown handlers
+async function shutdown(signal: string): Promise<void> {
+	logger.info({ signal }, 'Shutdown signal received');
+
+	// Stop accepting new connections
+	server.close(() => {
+		logger.info('HTTP server closed');
+	});
+
+	// Close database connections
+	try {
+		crawlQueue.close();
+		logger.info('Queue connection closed');
+	} catch (error) {
+		logger.error(
+			{ error: error instanceof Error ? error.message : error },
+			'Error closing queue connection'
+		);
+	}
+
+	try {
+		jobStore.close();
+		logger.info('Job store connection closed');
+	} catch (error) {
+		logger.error(
+			{ error: error instanceof Error ? error.message : error },
+			'Error closing job store connection'
+		);
+	}
+
+	logger.info('Server shutdown complete');
+	process.exit(0);
+}
+
+// Handle shutdown signals
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+// Handle uncaught errors
+process.on('uncaughtException', (error) => {
+	logger.error(
+		{ error: error.message, stack: error.stack },
+		'Uncaught exception'
+	);
+	shutdown('uncaughtException');
+});
+
+process.on('unhandledRejection', (reason) => {
+	logger.error(
+		{ reason: reason instanceof Error ? reason.message : reason },
+		'Unhandled rejection'
+	);
+	shutdown('unhandledRejection');
 });
 
 export default app;

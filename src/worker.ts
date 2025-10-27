@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 import { configDotenv } from "dotenv";
-import ContextCrawlerCore from "./core.js";
 import { jobStore } from "./job-store.js";
 import logger from "./logger.js";
 import { crawlQueue, QueueJob } from "./queue.js";
+import { runTask } from "./task-runner.js";
 
 configDotenv();
 
@@ -38,47 +38,39 @@ async function processCrawlJob(job: QueueJob): Promise<void> {
     "Processing crawl job",
   );
 
-  // Create crawler instance (null if error occurs during setup)
-  let crawler: ContextCrawlerCore | null = null;
-
   try {
     // Update job status to running in job store
     jobStore.updateJobStatus(jobId, "running");
 
-    // Instantiate the crawler
-    crawler = new ContextCrawlerCore(config);
+    // Execute the task using shared runner
+    const result = await runTask(config);
 
-    // Run the crawl
-    await crawler.crawl();
+    if (result.success) {
+      // Mark queue job as completed
+      crawlQueue.markCompleted(job.id);
 
-    // Write the output
-    const outputFileName = await crawler.write();
+      // Update job store status to completed
+      jobStore.updateJobStatus(jobId, "completed", {
+        outputFile: result.outputFile || undefined,
+        completedAt: new Date(),
+      });
 
-    // Clean up job storage
-    await crawler.cleanup();
+      // Auto-clear completed jobs from queue
+      const clearedCount = crawlQueue.clearCompletedJobs();
+      if (clearedCount > 0) {
+        logger.debug(
+          { clearedCount },
+          "Auto-cleared completed/failed jobs from queue",
+        );
+      }
 
-    // Mark queue job as completed
-    crawlQueue.markCompleted(job.id);
-
-    // Update job store status to completed
-    jobStore.updateJobStatus(jobId, "completed", {
-      outputFile: outputFileName || undefined,
-      completedAt: new Date(),
-    });
-
-    // Auto-clear completed jobs from queue
-    const clearedCount = crawlQueue.clearCompletedJobs();
-    if (clearedCount > 0) {
-      logger.debug(
-        { clearedCount },
-        "Auto-cleared completed/failed jobs from queue",
+      logger.info(
+        { jobId, queueJobId: job.id, outputFile: result.outputFile },
+        "Crawl job completed successfully",
       );
+    } else {
+      throw new Error(result.error || "Task execution failed");
     }
-
-    logger.info(
-      { jobId, queueJobId: job.id, outputFile: outputFileName },
-      "Crawl job completed successfully",
-    );
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error occurred";
@@ -87,24 +79,6 @@ async function processCrawlJob(job: QueueJob): Promise<void> {
       { jobId, queueJobId: job.id, error: errorMessage, attempt: job.attempts },
       "Crawl job failed",
     );
-
-    // Clean up storage before retry (important for file system race conditions)
-    if (crawler) {
-      try {
-        await crawler.cleanup();
-      } catch (cleanupError) {
-        logger.warn(
-          {
-            jobId,
-            error:
-              cleanupError instanceof Error
-                ? cleanupError.message
-                : cleanupError,
-          },
-          "Failed to cleanup storage after error",
-        );
-      }
-    }
 
     // Determine if we should retry
     const shouldRetry = job.attempts < job.maxAttempts;

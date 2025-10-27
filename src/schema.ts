@@ -11,6 +11,15 @@ export interface CrawledData {
 	[key: string]: unknown;
 }
 
+/**
+ * Type-safe hook invoked on each page visit
+ * Provides access to Playwright page and data persistence
+ */
+export type OnVisitPageHook = (context: {
+	page: Page;
+	pushData: (data: Record<string, unknown>) => Promise<void>;
+}) => Promise<void>;
+
 const Page: z.ZodType<Page> = z.custom<Page>((val) => {
 	return (
 		typeof val === 'object' &&
@@ -20,6 +29,12 @@ const Page: z.ZodType<Page> = z.custom<Page>((val) => {
 		'title' in val
 	);
 });
+
+const onVisitPageHook: z.ZodType<OnVisitPageHook> = z.custom<OnVisitPageHook>(
+	(val) => {
+		return typeof val === 'function';
+	}
+);
 
 export const globalConfigSchema = z.object({
 	maxPagesToCrawl: z.union([z.number(), z.literal('unlimited')]),
@@ -79,7 +94,11 @@ export const configSchema = z.object({
 			),
 		])
 		.optional(),
-	onVisitPage: z.any().optional(),
+	/**
+	 * Hook called on each page visit before content extraction
+	 * Receives { page, pushData } for custom page interactions
+	 */
+	onVisitPage: onVisitPageHook.optional(),
 	waitForSelectorTimeout: z.number().optional(),
 	resourceExclusions: z.array(z.string()).optional(),
 	maxFileSize: z.number().optional(),

@@ -12,5 +12,5 @@ export default defineJob({
 		'https://ai-sdk.dev/docs/advanced/**',
 	],
 	exclude: ['**/support', '**/changelog', '**/llms-full.txt*'],
-	selector: '#content-area',
+	selector: 'article',
 });

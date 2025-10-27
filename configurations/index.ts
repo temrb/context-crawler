@@ -5,7 +5,6 @@
 import type { JobTasks } from './types.js';
 
 import aiSdk from './jobs/ai-sdk.js';
-import betterAuth from './jobs/better-auth.js';
 import nextJs16 from './jobs/next-js-16.js';
 import polarSh from './jobs/polar-sh.js';
 import prisma from './jobs/prisma.js';
@@ -19,7 +18,6 @@ import zod from './jobs/zod.js';
  */
 export const jobs = {
 	'ai-sdk': aiSdk,
-	'better-auth': betterAuth,
 	'next-js-16': nextJs16,
 	'polar-sh': polarSh,
 	prisma,

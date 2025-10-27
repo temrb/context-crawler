@@ -10,7 +10,7 @@ import { PathLike } from 'fs';
 import { mkdir, rm, writeFile } from 'fs/promises';
 import { isWithinTokenLimit } from 'gpt-tokenizer';
 import { minimatch } from 'minimatch';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { Page } from 'playwright';
 import { globalConfig } from './config.js';
 import logger from './logger.js';
@@ -180,11 +180,11 @@ export async function crawl(config: ConfigWithDataset) {
 							await waitForXPath(
 								page,
 								config.selector,
-								config.waitForSelectorTimeout ?? 1000
+								config.waitForSelectorTimeout ?? 5000
 							);
 						} else {
 							await page.waitForSelector(config.selector, {
-								timeout: config.waitForSelectorTimeout ?? 1000,
+								timeout: config.waitForSelectorTimeout ?? 5000,
 							});
 						}
 					}
@@ -514,11 +514,15 @@ class ContextCrawlerCore {
 	storageDir: string;
 
 	constructor(config: Config) {
+		// Sanitize outputFileName to prevent path traversal attacks
+		const sanitizedFileName = config.outputFileName
+			? join('output/jobs', basename(config.outputFileName))
+			: generateOutputFileName(config.name);
+
 		// Auto-generate outputFileName from task name if not provided
 		this.config = {
 			...config,
-			outputFileName:
-				config.outputFileName || generateOutputFileName(config.name),
+			outputFileName: sanitizedFileName,
 		};
 		// Generate a unique dataset name to isolate this crawl's data
 		this.datasetName = `ds-${randomBytes(4).toString('hex')}`;

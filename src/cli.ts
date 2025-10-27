@@ -2,8 +2,12 @@
 
 import { program } from 'commander';
 import { randomUUID } from 'crypto';
+import { createWriteStream } from 'fs';
+import { mkdir, mkdtemp, readFile, rm } from 'fs/promises';
 import inquirer from 'inquirer';
-import { createRequire } from 'node:module';
+import { tmpdir } from 'os';
+import { dirname, join } from 'path';
+import { pipeline } from 'stream/promises';
 import {
 	getAllJobNames,
 	getAllTaskNames,
@@ -16,9 +20,14 @@ import { jobStore } from './job-store.js';
 import logger from './logger.js';
 import { crawlQueue } from './queue.js';
 import { Config, configSchema, NamedConfig } from './schema.js';
+import { runTask } from './task-runner.js';
 
-const require = createRequire(import.meta.url);
-const { version, description } = require('../../package.json');
+// Import package.json using dynamic import for better compatibility
+const packageJsonUrl = new URL('../../package.json', import.meta.url);
+const packageInfo = JSON.parse(
+	await readFile(packageJsonUrl, 'utf-8')
+) as { version: string; description: string };
+const { version, description } = packageInfo;
 
 const messages = {
 	urls: 'Enter starting URLs (comma-separated for multiple):',
@@ -275,235 +284,193 @@ program
 			logger.info('Worker will process these jobs asynchronously');
 			logger.info('Check job status via API: GET /crawl/status/{jobId}');
 		} else {
-			// Direct mode: run each task sequentially with aggregation per job
-			const jobResults: Record<
-				string,
-				{
-					successful: Array<{ config: NamedConfig; outputFile: string | null }>;
-					failed: Array<{ config: NamedConfig; error: string }>;
-					crawlers: ContextCrawlerCore[];
-				}
-			> = {};
+			// Direct mode: run each task sequentially with streaming aggregation per job
+			// Create unique temp directory to avoid race conditions
+			const tempDir = await mkdtemp(join(tmpdir(), 'context-crawler-'));
 
-			// Initialize job results tracking
-			for (const jobName of selectedBatches) {
-				jobResults[jobName] = {
-					successful: [],
-					failed: [],
-					crawlers: [],
-				};
-			}
-
-			// Execute all tasks
-			for (let i = 0; i < allConfigs.length; i++) {
-				const { jobName, config } = allConfigs[i]!;
-				logger.info(
+			try {
+				const jobResults: Record<
+					string,
 					{
-						progress: `${i + 1}/${allConfigs.length}`,
-						job: jobName,
-						task: config.name,
-					},
-					`Crawling: ${config.name} (from ${jobName})`
-				);
+						successful: Array<{ config: NamedConfig; outputFile: string }>;
+						failed: Array<{ config: NamedConfig; error: string }>;
+					}
+				> = {};
 
-				try {
-					// For batch mode, write to temp storage instead of final output
-					const { join } = await import('path');
-					const tempOutputPath = join(
-						process.cwd(),
-						'storage',
-						'temp',
-						`${config.name}-${Date.now()}.json`
-					);
-					const tempConfig = { ...config, outputFileName: tempOutputPath };
-					const crawler = new ContextCrawlerCore(tempConfig);
-					jobResults[jobName]!.crawlers.push(crawler);
+				// Initialize job results tracking
+				for (const jobName of selectedBatches) {
+					jobResults[jobName] = {
+						successful: [],
+						failed: [],
+					};
+				}
 
-					await crawler.crawl();
-					const outputFile = await crawler.write();
-
-					jobResults[jobName]!.successful.push({
-						config,
-						outputFile: outputFile ? outputFile.toString() : null,
-					});
-
+				// Execute all tasks
+				for (let i = 0; i < allConfigs.length; i++) {
+					const { jobName, config } = allConfigs[i]!;
 					logger.info(
 						{
 							progress: `${i + 1}/${allConfigs.length}`,
 							job: jobName,
 							task: config.name,
 						},
-						`Completed: ${config.name}`
+						`Crawling: ${config.name} (from ${jobName})`
 					);
-				} catch (error) {
-					const errorMessage =
-						error instanceof Error ? error.message : 'Unknown error';
 
-					jobResults[jobName]!.failed.push({
-						config,
-						error: errorMessage,
-					});
+					// Write to isolated temp location for this task
+					const tempOutputPath = join(tempDir, `${config.name}.json`);
+					const tempConfig = { ...config, outputFileName: tempOutputPath };
 
-					logger.error(
-						{
-							progress: `${i + 1}/${allConfigs.length}`,
-							job: jobName,
-							task: config.name,
-							error: errorMessage,
-						},
-						`Failed: ${config.name}`
-					);
-				}
-			}
+					const result = await runTask(tempConfig);
 
-			// Aggregate results for each job
-			for (const jobName of selectedBatches) {
-				const results = jobResults[jobName]!;
-				const successCount = results.successful.length;
-				const failCount = results.failed.length;
-				const totalCount = successCount + failCount;
-
-				logger.info(
-					{ job: jobName, successCount, failCount, totalCount },
-					`Job '${jobName}' completed: ${successCount}/${totalCount} successful, ${failCount} failed`
-				);
-
-				// Aggregate successful outputs into single file
-				if (successCount > 0) {
-					try {
-						const aggregatedData: unknown[] = [];
-						const tempFilesRead: string[] = [];
-
-						// Read all successful output files
-						for (const { outputFile } of results.successful) {
-							if (outputFile) {
-								const { readFileSync, existsSync } = await import('fs');
-
-								// Check if file exists before reading
-								if (!existsSync(outputFile)) {
-									logger.warn(
-										{ job: jobName, file: outputFile },
-										`Temp file not found: ${outputFile}`
-									);
-									continue;
-								}
-
-								const content = readFileSync(outputFile, 'utf-8');
-								const data = JSON.parse(content);
-								tempFilesRead.push(outputFile);
-
-								// Handle both array and single object
-								if (Array.isArray(data)) {
-									aggregatedData.push(...data);
-								} else {
-									aggregatedData.push(data);
-								}
-							}
-						}
+					if (result.success && result.outputFile) {
+						jobResults[jobName]!.successful.push({
+							config,
+							outputFile: result.outputFile.toString(),
+						});
 
 						logger.info(
 							{
+								progress: `${i + 1}/${allConfigs.length}`,
 								job: jobName,
-								tempFilesFound: tempFilesRead.length,
-								tempFilesExpected: results.successful.filter(
-									(r) => r.outputFile
-								).length,
+								task: config.name,
 							},
-							`Read ${tempFilesRead.length} temp files for job '${jobName}'`
+							`Completed: ${config.name}`
 						);
+					} else {
+						jobResults[jobName]!.failed.push({
+							config,
+							error: result.error || 'Unknown error',
+						});
 
-						// Only write output if we have data
-						if (aggregatedData.length > 0) {
-							// Write aggregated output
+						logger.error(
+							{
+								progress: `${i + 1}/${allConfigs.length}`,
+								job: jobName,
+								task: config.name,
+								error: result.error,
+							},
+							`Failed: ${config.name}`
+						);
+					}
+				}
+
+				// Aggregate results for each job using streaming
+				for (const jobName of selectedBatches) {
+					const results = jobResults[jobName]!;
+					const successCount = results.successful.length;
+					const failCount = results.failed.length;
+					const totalCount = successCount + failCount;
+
+					logger.info(
+						{ job: jobName, successCount, failCount, totalCount },
+						`Job '${jobName}' completed: ${successCount}/${totalCount} successful, ${failCount} failed`
+					);
+
+					// Stream aggregation to avoid memory exhaustion
+					if (successCount > 0) {
+						try {
 							const aggregatedOutputPath = `output/jobs/${jobName}.json`;
-							const { writeFileSync, mkdirSync } = await import('fs');
-							const { dirname } = await import('path');
-							mkdirSync(dirname(aggregatedOutputPath), { recursive: true });
-							writeFileSync(
-								aggregatedOutputPath,
-								JSON.stringify(aggregatedData, null, 2)
-							);
+							await mkdir(dirname(aggregatedOutputPath), { recursive: true });
+
+							const writeStream = createWriteStream(aggregatedOutputPath, {
+								encoding: 'utf-8',
+							});
+
+							// Write opening bracket
+							writeStream.write('[\n');
+
+							let itemCount = 0;
+							let isFirstFile = true;
+
+							// Stream each temp file's contents
+							for (const { outputFile } of results.successful) {
+								const content = await readFile(outputFile, 'utf-8');
+								const data = JSON.parse(content);
+
+								// Handle both array and single object
+								const items = Array.isArray(data) ? data : [data];
+
+								for (const item of items) {
+									if (!isFirstFile) {
+										writeStream.write(',\n');
+									}
+									writeStream.write('  ');
+									writeStream.write(JSON.stringify(item, null, 2).replace(/\n/g, '\n  '));
+									isFirstFile = false;
+									itemCount++;
+								}
+							}
+
+							// Write closing bracket
+							writeStream.write('\n]\n');
+							writeStream.end();
+
+							// Wait for stream to finish
+							await new Promise<void>((resolve, reject) => {
+								writeStream.on('finish', () => resolve());
+								writeStream.on('error', reject);
+							});
 
 							logger.info(
 								{
 									job: jobName,
-									itemCount: aggregatedData.length,
+									itemCount,
 									outputFile: aggregatedOutputPath,
 								},
-								`Aggregated ${aggregatedData.length} items to ${aggregatedOutputPath}`
+								`Streamed ${itemCount} items to ${aggregatedOutputPath}`
 							);
-						} else {
-							logger.info(
-								{ job: jobName },
-								`Skipping output file creation for '${jobName}' - no items crawled`
+						} catch (error) {
+							logger.error(
+								{
+									job: jobName,
+									error: error instanceof Error ? error.message : error,
+								},
+								`Failed to aggregate outputs for job '${jobName}'`
 							);
 						}
-					} catch (error) {
-						logger.error(
-							{
-								job: jobName,
-								error: error instanceof Error ? error.message : error,
-							},
-							`Failed to aggregate outputs for job '${jobName}'`
+					} else {
+						logger.info(
+							{ job: jobName },
+							`Skipping aggregation for '${jobName}' - no successful tasks`
 						);
 					}
-				} else {
-					logger.info(
-						{ job: jobName },
-						`Skipping aggregation for '${jobName}' - no successful tasks`
+				}
+
+				// Final summary
+				const totalSuccessful = Object.values(jobResults).reduce(
+					(sum, r) => sum + r.successful.length,
+					0
+				);
+				const totalFailed = Object.values(jobResults).reduce(
+					(sum, r) => sum + r.failed.length,
+					0
+				);
+
+				logger.info(
+					{
+						jobs: selectedBatches.join(', '),
+						totalSuccessful,
+						totalFailed,
+						total: allConfigs.length,
+					},
+					`All jobs completed: ${totalSuccessful}/${allConfigs.length} successful, ${totalFailed} failed`
+				);
+			} finally {
+				// Always clean up temp directory
+				try {
+					await rm(tempDir, { recursive: true, force: true });
+					logger.debug({ tempDir }, 'Cleaned up temp directory');
+				} catch (error) {
+					logger.warn(
+						{
+							tempDir,
+							error: error instanceof Error ? error.message : error,
+						},
+						'Failed to cleanup temp directory'
 					);
 				}
-
-				// Clean up temporary storage directories
-				for (const crawler of results.crawlers) {
-					try {
-						await crawler.cleanup();
-					} catch (error) {
-						logger.warn(
-							{
-								error: error instanceof Error ? error.message : error,
-							},
-							'Failed to cleanup crawler storage'
-						);
-					}
-				}
 			}
-
-			// Clean up temp output directory after ALL batches are aggregated
-			try {
-				const { rm } = await import('fs/promises');
-				const { join } = await import('path');
-				const tempDir = join(process.cwd(), 'storage', 'temp');
-				await rm(tempDir, { recursive: true, force: true });
-				logger.debug({ tempDir }, 'Cleaned up temp output directory');
-			} catch (error) {
-				logger.warn(
-					{
-						error: error instanceof Error ? error.message : error,
-					},
-					'Failed to cleanup temp output directory'
-				);
-			}
-
-			// Final summary
-			const totalSuccessful = Object.values(jobResults).reduce(
-				(sum, r) => sum + r.successful.length,
-				0
-			);
-			const totalFailed = Object.values(jobResults).reduce(
-				(sum, r) => sum + r.failed.length,
-				0
-			);
-
-			logger.info(
-				{
-					jobs: selectedBatches.join(', '),
-					totalSuccessful,
-					totalFailed,
-					total: allConfigs.length,
-				},
-				`All jobs completed: ${totalSuccessful}/${allConfigs.length} successful, ${totalFailed} failed`
-			);
 		}
 	});
 

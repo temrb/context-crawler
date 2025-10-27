@@ -41,7 +41,6 @@
   "scripts": {
     "preinstall": "npx playwright install",
     "generate:jobs": "bun run scripts/generate-job-index.ts",
-    "predev": "bun run generate:jobs",
     "dev": "bun run cli -- batch",
     "prebuild": "bun run generate:jobs",
     "build": "tsc",

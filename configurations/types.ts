@@ -1,7 +1,12 @@
-import type { ConfigInput, NamedConfig } from '../src/schema.js';
+import type {
+	ConfigInput,
+	NamedConfig,
+	OnVisitPageHook,
+} from '../src/schema.js';
 import { configSchema } from '../src/schema.js';
 
 export type JobTasks = readonly NamedConfig[];
+export type { OnVisitPageHook };
 
 /**
  * Shape of the configuration object accepted by {@link defineJob}.
@@ -56,8 +61,13 @@ export interface JobConfig extends ConfigInput {
 	/**
 	 * Hook invoked with the active Playwright page before extraction.
 	 * Can be used to run custom logic such as in-page navigation or waiting for hydration.
+	 * @example
+	 * onVisitPage: async ({ page, pushData }) => {
+	 *   await page.click('#load-more');
+	 *   await page.waitForTimeout(1000);
+	 * }
 	 */
-	onVisitPage?: ConfigInput['onVisitPage'];
+	onVisitPage?: OnVisitPageHook;
 	/**
 	 * Timeout (in milliseconds) applied when waiting for {@link selector} to appear.
 	 * Falls back to the Playwright default if omitted.
