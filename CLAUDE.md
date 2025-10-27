@@ -1,382 +1,251 @@
-# CLAUDE.md
+# Context Crawler
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Context Crawler is a powerful and flexible web crawling toolkit designed to generate structured knowledge bases from websites. It features a robust, queue-based architecture for asynchronous processing, a REST API for programmatic control, and a rich command-line interface for direct execution.
 
-## Project Overview
+Its core purpose is to extract meaningful content and transform it into a format ready for Large Language Models (LLMs), complete with automatic embedding generation and a built-in semantic search API.
 
-Context Crawler is a website crawling tool that generates knowledge files from URLs. It uses a queue-based worker architecture with SQLite for persistent job storage and processing.
+## ✨ Features
 
-**Key Technologies:**
+- **Multiple Operation Modes**: Use the interactive CLI, the REST API, or run the background worker for maximum flexibility.
+- **Asynchronous & Resilient**: A queue-based worker system (powered by SQLite) ensures reliable, concurrent, and fault-tolerant crawling.
+- **LLM-Ready Artifacts**: Automatically generates text embeddings and vector indexes from crawled content for powerful semantic search.
+- **Semantic Search API**: Query your crawled knowledge base using natural language directly via a simple API endpoint.
+- **Rich Configuration**: Define complex crawl jobs with fine-grained control over URLs to match/exclude, content selectors (CSS & XPath), and more.
+- **Persistent Job Store**: Keeps a complete history of all crawl jobs, their status, and links to their output.
+- **Automatic Data Handling**: Intelligently splits large outputs based on token count or file size to respect LLM context limits.
+- **Developer Friendly**: Built with TypeScript, Zod for validation, and Pino for structured logging.
 
-- TypeScript with strict mode enabled
-- Crawlee + Playwright for web crawling
-- SQLite (better-sqlite3) for queue and job persistence
-- Express for REST API
-- Pino for structured logging
-- Zod for schema validation
+---
 
-## Development Commands
+## 🚀 Getting Started
 
-**Build:**
+### Prerequisites
 
-```bash
-bun run build         # Compile TypeScript to dist/
-bun run check         # Type-check without emitting files
-```
+- **Bun**: This project uses Bun as the package manager and runtime.
+- **Node.js**: While Bun is used, having a recent Node.js version is recommended.
+- **Windows Users**: It is highly recommended to use [Windows Subsystem for Linux (WSL)](https://learn.microsoft.com/en-us/windows/wsl/install) for compatibility.
 
-**Run Application:**
+### Installation
 
-```bash
-# CLI modes
-bun run cli -- list                      # List all jobs and their configs
-bun run cli -- single                    # Run single job (all configs in that job, interactive)
-bun run cli -- single <jobName>          # Run specific job by name
-bun run cli -- batch                     # Run multiple jobs (interactive, with aggregation)
-bun run cli -- batch nextJs react        # Run specific jobs by name
-bun run dev                              # Same as batch mode
+1. **Clone the repository:**
 
-# API server + worker
-bun start                                # Build, generate swagger, start both server and worker
-bun run start:server                     # Start API server only
-bun run start:worker                     # Start worker only
-```
+   ```bash
+   git clone <your-repository-url>
+   cd <repository-directory>
+   ```
 
-**Utilities:**
+2. **Install dependencies:**
+   This command will also download the necessary Playwright browser binaries.
 
-```bash
-bun run generate:jobs    # Regenerate configurations/index.ts (run after adding/removing job files)
-bun run queue:clear      # Clear completed/failed jobs from queue
-bun run swagger          # Generate Swagger API docs
-bun run fmt              # Format code with Prettier
-bun run prettier:check   # Check code formatting
-```
+   ```bash
+   bun install
+   ```
 
-**Important:** Playwright browsers are installed automatically during `npm install` via the preinstall hook.
+3. **Set up your environment:**
+   Copy the example environment file and customize it as needed.
 
-## Architecture
+   ```bash
+   cp .env.example .env
+   ```
 
-### Three-Tier Architecture
+   Key variables in `.env`:
+   - `API_PORT`: Port for the API server.
+   - `API_KEY`: An optional secret key to protect your API endpoints.
+   - `WORKER_CONCURRENCY`: Number of crawl jobs the worker can run in parallel.
 
-1. **CLI Layer** (`src/cli.ts`): Commander-based CLI with three modes:
-   - `list`: Display all available jobs with config counts
-   - `single`: Run a single job (all configs within that job)
-   - `batch`: Run multiple jobs with aggregation
-     - Direct mode: Executes configs sequentially, aggregates outputs to `output/jobs/{job-name}.json`
-     - Queue mode: Adds all configs to queue for worker processing
-     - Continues processing on config failure, logs comprehensive summary
-     - Cleans up temporary storage after aggregation
-   - Note: Terminology can be confusing - a "job" is a file in `configurations/jobs/`, each containing one or more "configs" (crawl configurations)
+### Quick Start: Crawl, Index, and Search
 
-2. **API Layer** (`src/server.ts`): Express REST API for:
-   - `POST /crawl`: Submit single crawl job (by task name or custom config)
-   - `POST /crawl/batch`: Submit entire job (queues all tasks)
-   - `GET /crawl/status/:jobId`: Check job status
-   - `GET /crawl/results/:jobId`: Download results (streams JSON)
-   - `GET /configurations`: List available jobs, tasks, and legacy batches
-   - Authentication via `X-API-KEY` header when `API_KEY` env var is set
+Let's run a pre-defined job, generate its LLM artifacts, and query it.
 
-3. **Worker Layer** (`src/worker.ts`): Background job processor:
-   - Polls SQLite queue for pending jobs
-   - Processes jobs concurrently (controlled by `WORKER_CONCURRENCY`)
-   - Implements exponential backoff retry logic
-   - Handles graceful shutdown and cleanup
+1. **List available crawl jobs:**
 
-### Core Components
+   ```bash
+   bun run cli list
+   ```
 
-**Queue System** (`src/queue.ts`):
+2. **Run a single job:**
+   This command runs all configurations for the `zod` job and saves the output to `output/jobs/zod.json`.
 
-- SQLite-based job queue with WAL mode for better concurrency
-- Job states: `pending` → `claimed` → `completed`/`failed`
-- Automatic retry with exponential backoff
-- Priority support and claim timeouts
+   ```bash
+   bun run cli single zod
+   ```
 
-**Job Store** (`src/job-store.ts`):
+3. **Generate LLM artifacts:**
+   This script processes the JSON output, creates a text file, generates embeddings, and saves a vector index.
 
-- Persists job metadata, status, and results
-- Tracks job lifecycle from submission to completion
-- Stores output file paths and error information
+   ```bash
+   bun run generate:llm-artifacts
+   ```
 
-**Configuration System** (`src/config.ts`):
+4. **Start the API server:**
 
-- Job-based configuration in `configurations/jobs/` directory
-- Each job file (`.ts`) contains one or more configs (crawl configurations)
-- Supports both single object and array formats in job files
-- Job registry: `configurations/index.ts` (auto-generated by `bun run generate:jobs`)
-- Global config: `configurations/global.config.ts` (manually edit maxPagesToCrawl and maxTokens)
-- Terminology: "Job" = file in jobs/, "Config" = individual crawl configuration within a job
+   ```bash
+   bun run start:server
+   ```
 
-**Task Runner** (`src/task-runner.ts`):
+5. **Perform a semantic search:**
+   Query the indexed `zod` documentation for information about "refinements".
 
-- Centralizes task execution logic shared between worker and CLI
-- Wraps the crawler with error handling and cleanup
-- Returns structured result with success status, output file, and error message
-- Ensures storage cleanup happens even on failure
+   ```bash
+   curl "http://localhost:5000/get/zod/llms.txt?subject=what%20are%20refinements"
+   ```
 
-**Crawler Core** (`src/core.ts`):
+---
 
-- Uses Crawlee's PlaywrightCrawler for robust crawling
-- Supports XPath (starting with `/`) and CSS selectors
-- Handles cookies, resource exclusions, and wait timeouts
-- Implements automatic file splitting based on token limits and file size
-- Isolated storage per job to enable concurrent crawling
+## 🛠️ Usage
 
-**Schema** (`src/schema.ts`):
+Context Crawler can be operated in three main ways:
 
-- Zod schemas for config validation
-- `globalConfigSchema`: Global settings (maxPagesToCrawl, maxTokens)
-- `configSchema`: Individual crawl configuration
-- Helper functions for generating names and file paths from URLs
+### 1. Command-Line Interface (CLI)
 
-### Data Flow
+The CLI is ideal for direct control and running jobs synchronously.
 
-```
-CLI/API → Job Store → Queue → Worker → Crawler → Output Files
-                                  ↓
-                            Job Store (status updates)
-```
+- **List all jobs:**
 
-1. User submits crawl via CLI or API
-2. Job created in Job Store with status `pending`
-3. Job added to Queue
-4. Worker claims job from Queue
-5. Worker processes crawl using Crawler Core
-6. Crawler writes output to `output/` directory
-7. Worker updates Job Store with results/errors
-8. Worker marks Queue job as completed/failed
+  ```bash
+  bun run cli list
+  ```
 
-### Concurrency and Isolation
+- **Run a single job (e.g., `react-19`):**
+  The CLI will run all configs found in `react-19.ts` and aggregate the results.
 
-**Per-Job Isolation:**
+  ```bash
+  bun run cli single react-19
+  ```
 
-- Each crawl gets unique `storageDir` (e.g., `storage/job-{uuid}`)
-- Each crawl gets unique `datasetName` (e.g., `crawl-{timestamp}-{random}`)
-- Prevents Crawlee storage conflicts during concurrent crawling
+- **Run a batch of specific jobs:**
+  This runs the `prisma` and `trpc` jobs sequentially.
 
-**Worker Concurrency:**
+  ```bash
+  bun run cli batch prisma trpc
+  ```
 
-- Default: 2 concurrent jobs (configurable via `WORKER_CONCURRENCY`)
-- Reduced from 5 to prevent memory exhaustion and file system race conditions
-- Each job runs in isolated storage to avoid conflicts
+- **Run in interactive mode:**
+  Running `single` or `batch` without arguments will launch an interactive prompt to select jobs.
 
-## Configuration Structure
+  ```bash
+  bun run cli batch
+  ```
 
-**Job Registry** (`configurations/index.ts`):
+### 2. API Server & Worker
 
-This file is **auto-generated** by `scripts/generate-job-index.ts`. Run `bun run generate:jobs` after adding or removing job files.
+For automated workflows, the API server and worker provide a robust, asynchronous system.
+
+1. **Start the Worker:**
+   The worker polls the queue for new jobs to process.
+
+   ```bash
+   bun run start:worker
+   ```
+
+2. **Start the API Server:**
+   The server exposes endpoints to queue jobs and check their status.
+
+   ```bash
+   bun run start:server
+   ```
+
+3. **(Optional) Start Both:**
+
+   ```bash
+   bun start
+   ```
+
+**Key API Endpoints:**
+
+- `POST /crawl`: Queue a crawl job by name (e.g., `{ "name": "zod" }`).
+- `GET /crawl/status/:jobId`: Check the status of a job (`pending`, `running`, `completed`, `failed`).
+- `GET /crawl/results/:jobId`: Download the JSON output of a completed job.
+- `GET /get/:jobName/llms.txt`: Stream the full text knowledge file.
+- `GET /get/:jobName/llms.txt?subject=<query>`: Perform a semantic search on the knowledge file.
+
+Check out the full OpenAPI documentation, available at `/api-docs` when the server is running.
+
+### 3. LLM Features
+
+The core value of Context Crawler is its ability to create searchable knowledge bases.
+
+- **Artifacts**: For each job, the system generates "LLM artifacts":
+  - `data/llms/{job-name}.txt`: A clean, concatenated text version of all crawled content.
+  - `data/indexes/{job-name}.index`: An HNSWLib vector index for fast semantic search.
+- **Generation**: Artifacts are generated automatically when a job completes via the worker. You can also generate or update them manually:
+
+  ```bash
+  # Generate artifacts for any outdated job outputs
+  bun run generate:llm-artifacts
+
+  # Check if any artifacts are out of sync with their source files
+  bun run check:llm-artifacts
+  ```
+
+---
+
+## ⚙️ Configuration
+
+All crawl jobs are defined as TypeScript files in the `configurations/jobs/` directory.
+
+### Job vs. Config
+
+- A **Job** is a file in `configurations/jobs/`, like `prisma.ts`. Its name is derived from the filename (e.g., `prisma`).
+- A **Config** is a single crawl configuration object within a job file. A job file can export a single config or an array of configs.
+
+**Example: A Single-Config Job (`zod.ts`)**
 
 ```typescript
-// AUTO-GENERATED - DO NOT EDIT
-export const jobs = {
-  'ai-sdk': aiSdk,
-  'next-js-16': nextJs16,
-  'polar-sh': polarSh,
-  prisma,
-  'react-19': react19,
-  trpc,
-  zod,
-} satisfies Record<string, JobTasks>;
-```
-
-**Global Configuration** (`configurations/global.config.ts`):
-
-Edit this file to modify global crawl behavior:
-
-```typescript
-export const globalConfig: GlobalConfig = {
-  maxPagesToCrawl: 'unlimited',  // or a number
-  maxTokens: 'unlimited',         // or a number
-};
-```
-
-Both fields accept either a number or the string `'unlimited'` for no limit.
-
-**Job Modules** (`configurations/jobs/{job-name}.ts`):
-
-Job modules export typed configs using the `defineJob` helper, giving you autocomplete for every field:
-
-**Single Config Job** (`configurations/jobs/zod.ts`):
-
-```ts
 import { defineJob } from '../types.js';
 
 export default defineJob({
-  entry: 'https://zod.dev',
-  match: [
-    'https://zod.dev/basics',
-    'https://zod.dev/api',
-    'https://zod.dev/error-customization',
-    // ... more URLs
-  ],
-  selector: 'article',
+	entry: 'https://zod.dev',
+	match: [
+		'https://zod.dev/basics',
+		'https://zod.dev/api',
+		// ... more URLs
+	],
+	selector: 'article',
 });
 ```
 
-**Multi-Config Job** (`configurations/jobs/next-js-16.ts`):
+**Example: A Multi-Config Job (`next-js-16.ts`)**
 
-```ts
+```typescript
 import { defineJob } from '../types.js';
 
 export default defineJob([
-  {
-    entry: 'https://nextjs.org/docs/app/getting-started/proxy',
-    match: [
-      'https://nextjs.org/docs/app/api-reference/**',
-      'https://nextjs.org/docs/architecture/accessibility',
-      'https://nextjs.org/docs/app/getting-started/metadata-and-og-images',
-    ],
-    selector: 'article',
-  },
+	{
+		entry: 'https://nextjs.org/docs/app/getting-started/proxy',
+		match: ['https://nextjs.org/docs/app/api-reference/**'],
+		selector: 'article',
+	},
+	{
+		entry: 'https://nextjs.org/docs/architecture/accessibility',
+		match: ['https://nextjs.org/docs/architecture/accessibility'],
+		selector: 'article',
+	},
 ]);
 ```
 
-**Configuration Fields:**
+### Main Configuration Fields
 
-```ts
-defineJob({
-  // Required fields
-  entry: 'https://react.dev/reference/react',  // Single entry point URL
-  match: 'https://react.dev/reference/**',     // URL pattern(s) to match (string or array)
-  selector: 'article',                          // CSS selector for content extraction
+| Field            | Description                                                              |
+| ---------------- | ------------------------------------------------------------------------ |
+| `entry`          | **Required.** The starting URL for the crawl.                            |
+| `match`          | **Required.** A glob pattern or array of patterns for URLs to crawl.     |
+| `selector`       | **Required.** A CSS selector or XPath to extract content from each page. |
+| `exclude`        | An optional glob pattern or array of patterns to exclude from the crawl. |
+| `outputFileName` | A custom filename for the output JSON. Defaults to `{job-name}.json`.    |
+| `maxFileSize`    | Max output file size in MB before splitting.                             |
+| `onVisitPage`    | A custom function to perform actions on a page (e.g., click buttons).    |
 
-  // Optional fields
-  exclude: ['**/archive/**'],                   // URL patterns to exclude
-  autoDiscoverNav: true,                        // Discover nav links before crawling (default: true)
-  discoverySelector: "nav, aside, [role='navigation']",  // CSS selector for nav discovery (default shown)
-  outputFileName: 'custom-name.json',           // Override output filename
-  cookie: { name: 'consent', value: 'yes' },    // Cookie(s) to inject
-  onVisitPage: async ({ page, pushData }) => {  // Hook for custom page interactions
-    await page.click('#load-more');
-    await page.waitForTimeout(1000);
-  },
-  waitForSelectorTimeout: 10000,                // Timeout in ms for selector
-  resourceExclusions: ['image', 'font'],        // Resource types to block
-  maxFileSize: 50,                              // Max file size in MB
-  storageDir: './storage/custom',               // Crawlee storage directory
-  datasetName: 'custom-dataset',                // Crawlee dataset name
-});
-```
+### Global Configuration
 
-**Job Organization:**
+Global settings like `maxPagesToCrawl` and `maxTokens` (for output splitting) can be adjusted in `configurations/global.config.ts`.
 
-- All jobs defined in `configurations/jobs/` directory
-- Each `.ts` module exports a job (e.g., `next-js-16.ts`, `react-19.ts`)
-- Job names used in CLI: `bun run cli -- batch nextJs react`
-- Output per job: `output/jobs/{job-name}.json` (aggregated from all configs in that job)
+---
 
-**Migration from Legacy Structure:**
+## 💻 Development Commands
 
-- Migration script: `bun run scripts/migrate-configs.ts` (already completed)
-- All configurations now use the typed job modules in `configurations/jobs/`
-
-## Output Management
-
-**File Naming:**
-
-- Batch/Single job mode: `output/jobs/{job-name}.json` (aggregated from all successful configs)
-- Individual config outputs are written to temporary storage during execution
-- Queue mode: Each config writes to its designated output file
-
-**Note:** Individual config outputs during job execution are written to temporary storage and automatically cleaned up after aggregation.
-
-**Job Output Aggregation:**
-
-- Individual configs write to temporary storage during job execution
-- All successful config outputs are merged into a single array
-- Failed configs are logged but don't prevent aggregation
-- Temporary storage directories and temp files are cleaned up after aggregation
-- Only the final aggregated file remains in `output/jobs/{job-name}.json`
-- Summary includes: X/Y configs successful, Z failed
-
-**Automatic Splitting:**
-Files split when exceeding limits (creates numbered files: `output-1.json`, `output-2.json`, etc.):
-
-- Token limit: `maxTokens` from global config (checked with `gpt-tokenizer`)
-- File size limit: `maxFileSize` from individual config (in MB)
-
-**Output Format:**
-
-```json
-[
-  {
-    "title": "Page Title",
-    "url": "https://example.com/page",
-    "html": "Extracted content..."
-  }
-]
-```
-
-## Environment Configuration
-
-Copy `.env.example` to `.env`:
-
-```env
-# API Server
-API_PORT=5000
-API_HOST=localhost
-API_KEY=                      # Optional: enables auth when set
-
-# Worker
-WORKER_CONCURRENCY=2          # Concurrent crawl jobs
-POLL_INTERVAL_MS=1000         # Queue polling frequency
-MAX_POLL_INTERVAL_MS=10000    # Max backoff when queue empty
-JOB_TIMEOUT_MS=1800000        # Job timeout (30 min)
-BACKOFF_DELAY_MS=5000         # Initial retry delay
-
-# Logging
-LOG_LEVEL=info
-NODE_ENV=development
-```
-
-## TypeScript Configuration
-
-- Extends `@apify/tsconfig`
-- Strict mode enabled with all strictness flags
-- `noUncheckedIndexedAccess: true` for safer array access
-- ES2022 target and module system
-- Output to `dist/` directory
-
-## Important Implementation Details
-
-**Crawlee Dataset Isolation:**
-
-- Each crawl job must have unique `datasetName` and `storageDir`
-- Generated in `src/core.ts` when not provided in config
-- Critical for concurrent job processing without data corruption
-
-**SQLite Configuration:**
-
-- WAL (Write-Ahead Logging) mode enabled for better concurrency
-- Two databases: `data/queue.db` (queue) and `data/jobs.db` (job metadata)
-- Automatic directory creation for database paths
-
-**Selector Support:**
-
-- XPath selectors: Must start with `/` (e.g., `//article[@class="content"]`)
-- CSS selectors: Everything else (e.g., `article.content`)
-- Evaluation happens in browser context via Playwright
-
-**Error Handling:**
-
-- Failed jobs retry with exponential backoff
-- Default max attempts: 3
-- Retry delay doubles each attempt (starting at `BACKOFF_DELAY_MS`)
-- Worker handles cleanup on job failure
-
-**Graceful Shutdown:**
-
-- Worker listens for SIGTERM/SIGINT
-- Completes active jobs before exiting
-- Releases claimed jobs back to queue if needed
-
-## CLI Override Flags
-
-Any config field can be overridden via CLI:
-
-```bash
-bun run cli -- single my-crawler \
-  --outputFileName custom.json \
-  --maxFileSize 100 \
-  --waitForSelectorTimeout 5000
-```
-
-This allows quick config adjustments without editing job files.
+- `bun run build`: Compile TypeScript to the `dist/` directory.
+- `bun run dev`: Run the CLI in batch mode (interactive).
+- `bun run fmt`: Format the codebase with Prettier.
+- `bun run swagger`: Regenerate the Swagger/OpenAPI documentation.
+- `bun run generate:jobs`: **Important:** Run this after adding or removing a job file to update the central job registry.

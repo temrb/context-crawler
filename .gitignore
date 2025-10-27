@@ -20,3 +20,7 @@ data
 
 # any output from the crawler
 .env
+
+
+# generated
+configurations/index.ts

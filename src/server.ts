@@ -463,13 +463,20 @@ function registerRoutes(): void {
 					const jobName = parse(jobFile).name;
 					const indexPath = join(INDEXES_DIR, `${jobName}.index`);
 					const isIndexed = existsSync(indexPath);
+					const isStale = await llmService.isArtifactStale(jobName, jobFile);
 					let lastModified: Date | null = null;
 
 					if (isIndexed) {
 						lastModified = (await stat(indexPath)).mtime;
 					}
 
-					return { jobName, isIndexed, lastModified };
+					return {
+						jobName,
+						isIndexed,
+						isStale,
+						isUpToDate: isIndexed && !isStale,
+						lastModified,
+					};
 				}),
 			);
 
@@ -504,10 +511,6 @@ function registerRoutes(): void {
 
 	// Initialize the queue before starting the server
 	await crawlQueue.initialize();
-
-	llmService.initialize().catch((error) => {
-		logger.error({ error }, 'Background LLM initialization failed.');
-	});
 
 	let port = preferredPort;
 
