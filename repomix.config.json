@@ -27,7 +27,7 @@
 			"includeLogsCount": 50
 		}
 	},
-	"include": ["configurations", "src"],
+	"include": ["output/jobs", "CLAUDE.md"],
 	"ignore": {
 		"useGitignore": true,
 		"useDefaultPatterns": true,
