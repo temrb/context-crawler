@@ -1,6 +1,6 @@
+import { configDotenv } from "dotenv";
 import { existsSync } from "fs";
 import swaggerAutogen from "swagger-autogen";
-import { configDotenv } from "dotenv";
 
 configDotenv();
 
@@ -13,8 +13,8 @@ const API_PORT =
 
 const doc = {
   info: {
-    title: "Context Crawler API",
-    description: "Context Crawler",
+    title: "Context0 API",
+    description: "Context0",
   },
   host: `${API_HOST}:${API_PORT}`,
 };

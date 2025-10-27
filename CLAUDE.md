@@ -1,6 +1,6 @@
-# Context Crawler
+# Context0
 
-Context Crawler is a powerful and flexible web crawling toolkit designed to generate structured knowledge bases from websites. It features a robust, queue-based architecture for asynchronous processing, a REST API for programmatic control, and a rich command-line interface for direct execution.
+Context0 is a powerful and flexible web crawling toolkit designed to generate structured knowledge bases from websites. It features a robust, queue-based architecture for asynchronous processing, a REST API for programmatic control, and a rich command-line interface for direct execution.
 
 Its core purpose is to extract meaningful content and transform it into a format ready for Large Language Models (LLMs), complete with automatic embedding generation and a built-in semantic search API.
 
@@ -94,7 +94,7 @@ Let's run a pre-defined job, generate its LLM artifacts, and query it.
 
 ## 🛠️ Usage
 
-Context Crawler can be operated in three main ways:
+Context0 can be operated in three main ways:
 
 ### 1. Command-Line Interface (CLI)
 
@@ -163,7 +163,7 @@ Check out the full OpenAPI documentation, available at `/api-docs` when the serv
 
 ### 3. LLM Features
 
-The core value of Context Crawler is its ability to create searchable knowledge bases.
+The core value of Context0 is its ability to create searchable knowledge bases.
 
 - **Artifacts**: For each job, the system generates "LLM artifacts":
   - `data/llms/{job-name}.txt`: A clean, concatenated text version of all crawled content.
@@ -195,13 +195,13 @@ All crawl jobs are defined as TypeScript files in the `configurations/jobs/` dir
 import { defineJob } from '../types.js';
 
 export default defineJob({
-	entry: 'https://zod.dev',
-	match: [
-		'https://zod.dev/basics',
-		'https://zod.dev/api',
-		// ... more URLs
-	],
-	selector: 'article',
+ entry: 'https://zod.dev',
+ match: [
+  'https://zod.dev/basics',
+  'https://zod.dev/api',
+  // ... more URLs
+ ],
+ selector: 'article',
 });
 ```
 
@@ -211,16 +211,16 @@ export default defineJob({
 import { defineJob } from '../types.js';
 
 export default defineJob([
-	{
-		entry: 'https://nextjs.org/docs/app/getting-started/proxy',
-		match: ['https://nextjs.org/docs/app/api-reference/**'],
-		selector: 'article',
-	},
-	{
-		entry: 'https://nextjs.org/docs/architecture/accessibility',
-		match: ['https://nextjs.org/docs/architecture/accessibility'],
-		selector: 'article',
-	},
+ {
+  entry: 'https://nextjs.org/docs/app/getting-started/proxy',
+  match: ['https://nextjs.org/docs/app/api-reference/**'],
+  selector: 'article',
+ },
+ {
+  entry: 'https://nextjs.org/docs/architecture/accessibility',
+  match: ['https://nextjs.org/docs/architecture/accessibility'],
+  selector: 'article',
+ },
 ]);
 ```
 

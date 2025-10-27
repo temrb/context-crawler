@@ -3836,7 +3836,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Context Crawler is a website crawling tool that generates knowledge files from URLs. It uses a queue-based worker architecture with SQLite for persistent job storage and processing.
+Context0 is a website crawling tool that generates knowledge files from URLs. It uses a queue-based worker architecture with SQLite for persistent job storage and processing.
 
 **Key Technologies:**
 
