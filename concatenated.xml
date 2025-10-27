@@ -1,0 +1,2735 @@
+<directory_structure>
+configurations/
+  jobs/
+    ai-sdk.ts
+    next-js-16.ts
+    polar-sh.ts
+    prisma.ts
+    react-19.ts
+    trpc.ts
+    zod.ts
+  global.config.ts
+  index.ts
+  types.ts
+src/
+  cli.ts
+  config.ts
+  core.ts
+  job-store.ts
+  logger.ts
+  queue.ts
+  schema.ts
+  server.ts
+  task-runner.ts
+  worker.ts
+CLAUDE.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="configurations/global.config.ts">
+import type { GlobalConfig } from '../src/schema.js';
+export const globalConfig: GlobalConfig = {
+	maxPagesToCrawl: 'unlimited',
+	maxTokens: 'unlimited',
+};
+</file>
+
+<file path="configurations/index.ts">
+import type { JobTasks } from './types.js';
+import aiSdk from './jobs/ai-sdk.js';
+import nextJs16 from './jobs/next-js-16.js';
+import polarSh from './jobs/polar-sh.js';
+import prisma from './jobs/prisma.js';
+import react19 from './jobs/react-19.js';
+import trpc from './jobs/trpc.js';
+import zod from './jobs/zod.js';
+export const jobs = {
+	'ai-sdk': aiSdk,
+	'next-js-16': nextJs16,
+	'polar-sh': polarSh,
+	prisma,
+	'react-19': react19,
+	trpc,
+	zod,
+} satisfies Record<string, JobTasks>;
+export type JobRegistry = typeof jobs;
+</file>
+
+<file path="src/job-store.ts">
+import Database from "better-sqlite3";
+import { PathLike } from "fs";
+import { mkdirSync } from "fs";
+import { dirname } from "path";
+import { Config } from "./schema.js";
+export type JobStatus = "pending" | "running" | "completed" | "failed";
+export interface Job {
+  id: string;
+  status: JobStatus;
+  config: Config;
+  outputFile?: PathLike | null;
+  error?: string;
+  createdAt: Date;
+  completedAt?: Date;
+}
+export interface JobRecord {
+  id: string;
+  status: JobStatus;
+  config: string;
+  outputFile: string | null;
+  error: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+class JobStore {
+  private db: Database.Database;
+  constructor(dbPath: string = "./data/jobs.db") {
+    const dir = dirname(dbPath);
+    mkdirSync(dir, { recursive: true });
+    this.db = new Database(dbPath);
+    this.db.pragma("journal_mode = WAL");
+    this.initialize();
+  }
+  private initialize(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS jobs (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        config TEXT NOT NULL,
+        outputFile TEXT,
+        error TEXT,
+        createdAt TEXT NOT NULL,
+        completedAt TEXT
+      )
+    `);
+  }
+  createJob(jobId: string, config: Config): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO jobs (id, status, config, createdAt)
+      VALUES (?, ?, ?, ?)
+    `);
+    stmt.run(
+      jobId,
+      "pending",
+      JSON.stringify(config),
+      new Date().toISOString(),
+    );
+  }
+  getJobById(jobId: string): Job | undefined {
+    const stmt = this.db.prepare("SELECT * FROM jobs WHERE id = ?");
+    const record = stmt.get(jobId) as JobRecord | undefined;
+    if (!record) {
+      return undefined;
+    }
+    return this.recordToJob(record);
+  }
+  updateJobStatus(
+    jobId: string,
+    status: JobStatus,
+    data?: {
+      outputFile?: PathLike;
+      error?: string;
+      completedAt?: Date;
+    },
+  ): void {
+    const job = this.getJobById(jobId);
+    if (!job) {
+      throw new Error(`Job with id ${jobId} not found`);
+    }
+    const updates: string[] = ["status = ?"];
+    const params: (string | null)[] = [status];
+    if (data?.outputFile !== undefined) {
+      updates.push("outputFile = ?");
+      params.push(String(data.outputFile));
+    }
+    if (data?.error !== undefined) {
+      updates.push("error = ?");
+      params.push(data.error);
+    }
+    if (data?.completedAt !== undefined) {
+      updates.push("completedAt = ?");
+      params.push(data.completedAt.toISOString());
+    }
+    params.push(jobId);
+    const stmt = this.db.prepare(`
+      UPDATE jobs
+      SET ${updates.join(", ")}
+      WHERE id = ?
+    `);
+    stmt.run(...params);
+  }
+  getAllJobs(): Job[] {
+    const stmt = this.db.prepare("SELECT * FROM jobs ORDER BY createdAt DESC");
+    const records = stmt.all() as JobRecord[];
+    return records.map((record) => this.recordToJob(record));
+  }
+  deleteJob(jobId: string): void {
+    const stmt = this.db.prepare("DELETE FROM jobs WHERE id = ?");
+    stmt.run(jobId);
+  }
+  close(): void {
+    this.db.close();
+  }
+  private recordToJob(record: JobRecord): Job {
+    return {
+      id: record.id,
+      status: record.status,
+      config: JSON.parse(record.config) as Config,
+      outputFile: record.outputFile,
+      error: record.error ?? undefined,
+      createdAt: new Date(record.createdAt),
+      completedAt: record.completedAt
+        ? new Date(record.completedAt)
+        : undefined,
+    };
+  }
+}
+export const jobStore = new JobStore();
+</file>
+
+<file path="src/logger.ts">
+import pino from "pino";
+const isDevelopment = process.env.NODE_ENV === "development";
+export const logger = pino({
+  level: process.env.LOG_LEVEL || "info",
+  transport: isDevelopment
+    ? {
+        target: "pino-pretty",
+        options: {
+          colorize: true,
+          translateTime: "HH:MM:ss Z",
+          ignore: "pid,hostname",
+        },
+      }
+    : undefined,
+});
+export default logger;
+</file>
+
+<file path="src/task-runner.ts">
+import { PathLike } from 'fs';
+import ContextCrawlerCore from './core.js';
+import logger from './logger.js';
+import { Config } from './schema.js';
+export interface TaskResult {
+	success: boolean;
+	outputFile: PathLike | null;
+	error?: string;
+}
+export async function runTask(config: Config, jobName: string): Promise<TaskResult> {
+	let crawler: ContextCrawlerCore | null = null;
+	try {
+		logger.info({ job: jobName }, `Starting job: ${jobName}`);
+		crawler = new ContextCrawlerCore(config, jobName);
+		await crawler.crawl();
+		const outputFile = await crawler.write();
+		await crawler.cleanup();
+		logger.info(
+			{ job: jobName, outputFile },
+			`Job completed: ${jobName}`
+		);
+		return {
+			success: true,
+			outputFile,
+		};
+	} catch (error) {
+		const errorMessage =
+			error instanceof Error ? error.message : 'Unknown error occurred';
+		logger.error(
+			{ job: jobName, error: errorMessage },
+			`Job failed: ${jobName}`
+		);
+		if (crawler) {
+			try {
+				await crawler.cleanup();
+			} catch (cleanupError) {
+				logger.warn(
+					{
+						job: jobName,
+						error:
+							cleanupError instanceof Error
+								? cleanupError.message
+								: cleanupError,
+					},
+					'Failed to cleanup storage after error'
+				);
+			}
+		}
+		return {
+			success: false,
+			outputFile: null,
+			error: errorMessage,
+		};
+	}
+}
+</file>
+
+<file path="configurations/jobs/ai-sdk.ts">
+import { defineJob } from '../types.js';
+export default defineJob({
+	entry: 'https://ai-sdk.dev/docs/foundations/overview',
+	match: [
+		'https://ai-sdk.dev/docs/foundations/**',
+		'https://ai-sdk.dev/docs/getting-started/**',
+		'https://ai-sdk.dev/docs/agents/**',
+		'https://ai-sdk.dev/docs/ai-sdk-core/**',
+		'https://ai-sdk.dev/docs/ai-sdk-ui/**',
+		'https://ai-sdk.dev/docs/advanced/**',
+	],
+	exclude: ['**/support', '**/changelog', '**/llms-full.txt*'],
+	selector: 'article',
+});
+</file>
+
+<file path="configurations/jobs/next-js-16.ts">
+import { defineJob } from '../types.js';
+export default defineJob([
+	{
+		entry: 'https://nextjs.org/docs/app/getting-started/proxy',
+		match: [
+			'https://nextjs.org/docs/app/api-reference/**',
+			'https://nextjs.org/docs/architecture/accessibility',
+			'https://nextjs.org/docs/app/getting-started/metadata-and-og-images',
+		],
+		selector: 'article',
+	},
+]);
+</file>
+
+<file path="configurations/jobs/polar-sh.ts">
+import { defineJob } from '../types.js';
+export default defineJob({
+	entry: 'https://polar.sh/docs',
+	match: [
+		'https://polar.sh/docs/features/**',
+		'https://polar.sh/docs/integrate/authentication/**',
+		'https://polar.sh/docs/api-reference/**',
+		'https://polar.sh/docs/guides/**',
+	],
+	exclude: ['**/support', '**/changelog', '**/llms-full.txt*'],
+	selector: '#content-area',
+});
+</file>
+
+<file path="configurations/jobs/prisma.ts">
+import { defineJob } from '../types.js';
+export default defineJob({
+	entry: 'https://www.prisma.io/docs/orm/reference',
+	match: 'https://www.prisma.io/docs/orm/reference/**',
+	selector: 'article',
+});
+</file>
+
+<file path="configurations/jobs/react-19.ts">
+import { defineJob } from '../types.js';
+export default defineJob({
+	entry: 'https://react.dev/reference/react',
+	match: [
+		'https://react.dev/reference/react/**',
+		'https://react.dev/reference/react-dom/**',
+	],
+	selector: 'article',
+});
+</file>
+
+<file path="configurations/jobs/trpc.ts">
+import { defineJob } from '../types.js';
+export default defineJob({
+	entry: 'https://trpc.io/docs/server/introduction',
+	match: [
+		'https://trpc.io/docs/server/**',
+		'https://trpc.io/docs/client/**',
+		'https://trpc.io/docs/typedoc/**',
+	],
+	selector: 'article',
+});
+</file>
+
+<file path="configurations/jobs/zod.ts">
+import { defineJob } from '../types.js';
+export default defineJob({
+	entry: 'https://zod.dev',
+	match: [
+		'https://zod.dev/basics',
+		'https://zod.dev/api',
+		'https://zod.dev/error-customization',
+		'https://zod.dev/error-formatting',
+		'https://zod.dev/metadata',
+		'https://zod.dev/json-schema',
+		'https://zod.dev/codecs',
+		'https://zod.dev/packages/zod',
+		'https://zod.dev/packages/mini',
+		'https://zod.dev/packages/core',
+	],
+	selector: 'article',
+});
+</file>
+
+<file path="configurations/types.ts">
+import type {
+	ConfigInput,
+	NamedConfig,
+	OnVisitPageHook,
+} from '../src/schema.js';
+import { configSchema } from '../src/schema.js';
+export type JobTasks = readonly NamedConfig[];
+export type { OnVisitPageHook };
+export interface JobConfig extends ConfigInput {
+	entry: ConfigInput['entry'];
+	match: ConfigInput['match'];
+	exclude?: ConfigInput['exclude'];
+	selector: ConfigInput['selector'];
+	autoDiscoverNav?: ConfigInput['autoDiscoverNav'];
+	discoverySelector?: ConfigInput['discoverySelector'];
+	outputFileName?: ConfigInput['outputFileName'];
+	cookie?: ConfigInput['cookie'];
+	onVisitPage?: OnVisitPageHook;
+	waitForSelectorTimeout?: ConfigInput['waitForSelectorTimeout'];
+	resourceExclusions?: ConfigInput['resourceExclusions'];
+	maxFileSize?: ConfigInput['maxFileSize'];
+	storageDir?: ConfigInput['storageDir'];
+	datasetName?: ConfigInput['datasetName'];
+}
+export function defineJob(task: JobConfig): readonly [NamedConfig];
+export function defineJob(tasks: readonly JobConfig[]): readonly NamedConfig[];
+export function defineJob(
+	job: ConfigInput | readonly ConfigInput[]
+): readonly NamedConfig[] {
+	const normalized = Array.isArray(job) ? job : [job];
+	const parsed = normalized.map((task) => configSchema.parse(task));
+	return Object.freeze(parsed) as readonly NamedConfig[];
+}
+</file>
+
+<file path="src/queue.ts">
+import Database from "better-sqlite3";
+import { mkdir } from "fs/promises";
+import { dirname } from "path";
+import { Config } from "./schema.js";
+export interface CrawlJobData {
+  config: Config;
+  jobName: string;
+}
+export interface QueueJobOptions {
+  jobId: string;
+  priority?: number;
+  maxAttempts?: number;
+  backoffDelay?: number;
+}
+interface QueueJobRecord {
+  id: string;
+  jobId: string;
+  status: "pending" | "claimed" | "completed" | "failed";
+  data: string;
+  priority: number;
+  attempts: number;
+  maxAttempts: number;
+  nextRetryAt: string | null;
+  claimedAt: string | null;
+  completedAt: string | null;
+  error: string | null;
+  createdAt: string;
+}
+export interface QueueJob {
+  id: string;
+  jobId: string;
+  data: CrawlJobData;
+  attempts: number;
+  maxAttempts: number;
+}
+class SQLiteQueue {
+  private db!: Database.Database;
+  private dbPath: string;
+  private initialized = false;
+  constructor(dbPath: string = "./data/queue.db") {
+    this.dbPath = dbPath;
+  }
+  async initialize(): Promise<void> {
+    if (this.initialized) {
+      return;
+    }
+    const dir = dirname(this.dbPath);
+    await mkdir(dir, { recursive: true });
+    this.db = new Database(this.dbPath);
+    this.db.pragma("journal_mode = WAL");
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        jobId TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        data TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        maxAttempts INTEGER NOT NULL DEFAULT 3,
+        nextRetryAt TEXT,
+        claimedAt TEXT,
+        completedAt TEXT,
+        error TEXT,
+        createdAt TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
+      CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC);
+      CREATE INDEX IF NOT EXISTS idx_queue_nextRetryAt ON queue(nextRetryAt);
+    `);
+    this.initialized = true;
+  }
+  async add(
+    _queueName: string,
+    data: CrawlJobData,
+    options: QueueJobOptions,
+  ): Promise<void> {
+    const {
+      jobId,
+      priority = 0,
+      maxAttempts = 3,
+      backoffDelay = 1000,
+    } = options;
+    const stmt = this.db.prepare(`
+      INSERT INTO queue (jobId, status, data, priority, maxAttempts, createdAt)
+      VALUES (?, 'pending', ?, ?, ?, ?)
+    `);
+    stmt.run(
+      jobId,
+      JSON.stringify(data),
+      priority,
+      maxAttempts,
+      new Date().toISOString(),
+    );
+  }
+  claimNextJob(): QueueJob | null {
+    const now = new Date().toISOString();
+    const claimJob = this.db.transaction(() => {
+      const findStmt = this.db.prepare(`
+        SELECT * FROM queue
+        WHERE status = 'pending'
+          AND (nextRetryAt IS NULL OR nextRetryAt <= ?)
+        ORDER BY priority DESC, createdAt ASC
+        LIMIT 1
+      `);
+      const record = findStmt.get(now) as QueueJobRecord | undefined;
+      if (!record) {
+        return null;
+      }
+      const updateStmt = this.db.prepare(`
+        UPDATE queue
+        SET status = 'claimed',
+            claimedAt = ?,
+            attempts = attempts + 1
+        WHERE id = ?
+      `);
+      updateStmt.run(now, record.id);
+      return {
+        id: record.id.toString(),
+        jobId: record.jobId,
+        data: JSON.parse(record.data) as CrawlJobData,
+        attempts: record.attempts + 1,
+        maxAttempts: record.maxAttempts,
+      };
+    });
+    return claimJob();
+  }
+  markCompleted(queueJobId: string): void {
+    const stmt = this.db.prepare(`
+      UPDATE queue
+      SET status = 'completed',
+          completedAt = ?
+      WHERE id = ?
+    `);
+    stmt.run(new Date().toISOString(), queueJobId);
+  }
+  markFailed(
+    queueJobId: string,
+    error: string,
+    shouldRetry: boolean,
+    backoffDelay: number = 1000,
+  ): void {
+    const record = this.db
+      .prepare("SELECT * FROM queue WHERE id = ?")
+      .get(queueJobId) as QueueJobRecord | undefined;
+    if (!record) {
+      return;
+    }
+    if (shouldRetry && record.attempts < record.maxAttempts) {
+      const delay = backoffDelay * Math.pow(2, record.attempts - 1);
+      const nextRetryAt = new Date(Date.now() + delay).toISOString();
+      const stmt = this.db.prepare(`
+        UPDATE queue
+        SET status = 'pending',
+            nextRetryAt = ?,
+            error = ?
+        WHERE id = ?
+      `);
+      stmt.run(nextRetryAt, error, queueJobId);
+    } else {
+      const stmt = this.db.prepare(`
+        UPDATE queue
+        SET status = 'failed',
+            completedAt = ?,
+            error = ?
+        WHERE id = ?
+      `);
+      stmt.run(new Date().toISOString(), error, queueJobId);
+    }
+  }
+  resetStuckJobs(timeoutMs: number = 30 * 60 * 1000): number {
+    const cutoffTime = new Date(Date.now() - timeoutMs).toISOString();
+    const stmt = this.db.prepare(`
+      UPDATE queue
+      SET status = 'pending',
+          claimedAt = NULL
+      WHERE status = 'claimed'
+        AND claimedAt < ?
+    `);
+    const result = stmt.run(cutoffTime);
+    return result.changes;
+  }
+  cleanupOldJobs(ageMs: number = 7 * 24 * 60 * 60 * 1000): number {
+    const cutoffTime = new Date(Date.now() - ageMs).toISOString();
+    const stmt = this.db.prepare(`
+      DELETE FROM queue
+      WHERE status IN ('completed', 'failed')
+        AND completedAt < ?
+    `);
+    const result = stmt.run(cutoffTime);
+    return result.changes;
+  }
+  clearCompletedJobs(): number {
+    const stmt = this.db.prepare(`
+      DELETE FROM queue
+      WHERE status IN ('completed', 'failed')
+    `);
+    const result = stmt.run();
+    return result.changes;
+  }
+  getStats(): {
+    pending: number;
+    claimed: number;
+    completed: number;
+    failed: number;
+    total: number;
+  } {
+    const stmt = this.db.prepare(`
+      SELECT
+        status,
+        COUNT(*) as count
+      FROM queue
+      GROUP BY status
+    `);
+    const results = stmt.all() as Array<{ status: string; count: number }>;
+    const stats = {
+      pending: 0,
+      claimed: 0,
+      completed: 0,
+      failed: 0,
+      total: 0,
+    };
+    results.forEach((row) => {
+      const status = row.status as keyof typeof stats;
+      if (status in stats) {
+        stats[status] = row.count;
+      }
+      stats.total += row.count;
+    });
+    return stats;
+  }
+  close(): void {
+    this.db.close();
+  }
+}
+export const crawlQueue = new SQLiteQueue();
+</file>
+
+<file path="src/worker.ts">
+#!/usr/bin/env node
+import { configDotenv } from "dotenv";
+import { jobStore } from "./job-store.js";
+import logger from "./logger.js";
+import { crawlQueue, QueueJob } from "./queue.js";
+import { runTask } from "./task-runner.js";
+configDotenv();
+const WORKER_CONCURRENCY = Number(process.env.WORKER_CONCURRENCY) || 2;
+const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 1000;
+const MAX_POLL_INTERVAL_MS = Number(process.env.MAX_POLL_INTERVAL_MS) || 10000;
+const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS) || 30 * 60 * 1000;
+const BACKOFF_DELAY_MS = Number(process.env.BACKOFF_DELAY_MS) || 5000;
+const activeJobs = new Set<Promise<void>>();
+let isShuttingDown = false;
+let pollIntervalId: NodeJS.Timeout | null = null;
+let currentPollInterval = POLL_INTERVAL_MS;
+async function processCrawlJob(job: QueueJob): Promise<void> {
+  const { config, jobName } = job.data;
+  const { jobId } = job;
+  logger.info(
+    {
+      jobId,
+      jobName,
+      queueJobId: job.id,
+      attempt: job.attempts,
+      maxAttempts: job.maxAttempts,
+    },
+    "Processing crawl job",
+  );
+  try {
+    jobStore.updateJobStatus(jobId, "running");
+    const result = await runTask(config, jobName || 'unknown');
+    if (result.success) {
+      crawlQueue.markCompleted(job.id);
+      jobStore.updateJobStatus(jobId, "completed", {
+        outputFile: result.outputFile || undefined,
+        completedAt: new Date(),
+      });
+      const clearedCount = crawlQueue.clearCompletedJobs();
+      if (clearedCount > 0) {
+        logger.debug(
+          { clearedCount },
+          "Auto-cleared completed/failed jobs from queue",
+        );
+      }
+      logger.info(
+        { jobId, queueJobId: job.id, outputFile: result.outputFile },
+        "Crawl job completed successfully",
+      );
+    } else {
+      throw new Error(result.error || "Task execution failed");
+    }
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error occurred";
+    logger.error(
+      { jobId, queueJobId: job.id, error: errorMessage, attempt: job.attempts },
+      "Crawl job failed",
+    );
+    const shouldRetry = job.attempts < job.maxAttempts;
+    const backoffWithJitter =
+      BACKOFF_DELAY_MS *
+      Math.pow(2, job.attempts - 1) *
+      (0.5 + Math.random() * 0.5);
+    crawlQueue.markFailed(job.id, errorMessage, shouldRetry, backoffWithJitter);
+    if (!shouldRetry) {
+      jobStore.updateJobStatus(jobId, "failed", {
+        error: errorMessage,
+        completedAt: new Date(),
+      });
+      const clearedCount = crawlQueue.clearCompletedJobs();
+      if (clearedCount > 0) {
+        logger.debug(
+          { clearedCount },
+          "Auto-cleared completed/failed jobs from queue",
+        );
+      }
+    }
+  }
+}
+async function pollQueue(): Promise<void> {
+  if (isShuttingDown) {
+    return;
+  }
+  if (activeJobs.size >= WORKER_CONCURRENCY) {
+    return;
+  }
+  let jobClaimed = false;
+  const jobsToStart: QueueJob[] = [];
+  while (activeJobs.size + jobsToStart.length < WORKER_CONCURRENCY) {
+    const job = crawlQueue.claimNextJob();
+    if (!job) {
+      break;
+    }
+    jobClaimed = true;
+    jobsToStart.push(job);
+  }
+  for (const job of jobsToStart) {
+    const jobPromise = processCrawlJob(job)
+      .catch((error) => {
+        logger.error(
+          { error: error instanceof Error ? error.message : error },
+          "Unhandled error in job processing",
+        );
+      })
+      .finally(() => {
+        activeJobs.delete(jobPromise);
+      });
+    activeJobs.add(jobPromise);
+  }
+  if (jobClaimed) {
+    currentPollInterval = POLL_INTERVAL_MS;
+  } else {
+    currentPollInterval = Math.min(
+      currentPollInterval * 1.5,
+      MAX_POLL_INTERVAL_MS,
+    );
+  }
+}
+async function startWorker(): Promise<void> {
+  await crawlQueue.initialize();
+  logger.info(
+    {
+      concurrency: WORKER_CONCURRENCY,
+      pollInterval: POLL_INTERVAL_MS,
+      jobTimeout: JOB_TIMEOUT_MS,
+    },
+    "Worker starting...",
+  );
+  const resetCount = crawlQueue.resetStuckJobs(JOB_TIMEOUT_MS);
+  if (resetCount > 0) {
+    logger.info({ count: resetCount }, "Reset stuck jobs from previous run");
+  }
+  const cleanedCount = crawlQueue.cleanupOldJobs(7 * 24 * 60 * 60 * 1000);
+  if (cleanedCount > 0) {
+    logger.info({ count: cleanedCount }, "Cleaned up old jobs");
+  }
+  const stats = crawlQueue.getStats();
+  logger.info({ stats }, "Queue statistics");
+  const poll = () => {
+    pollQueue()
+      .catch((error) => {
+        logger.error(
+          { error: error instanceof Error ? error.message : error },
+          "Error during queue polling",
+        );
+      })
+      .finally(() => {
+        if (!isShuttingDown) {
+          pollIntervalId = setTimeout(poll, currentPollInterval);
+        }
+      });
+  };
+  poll();
+  logger.info("Worker is ready and waiting for jobs");
+}
+async function shutdown(): Promise<void> {
+  if (isShuttingDown) {
+    return;
+  }
+  isShuttingDown = true;
+  logger.info("Worker shutting down gracefully...");
+  if (pollIntervalId) {
+    clearTimeout(pollIntervalId);
+    pollIntervalId = null;
+  }
+  if (activeJobs.size > 0) {
+    logger.info(
+      { activeJobCount: activeJobs.size },
+      "Waiting for active jobs to complete...",
+    );
+    await Promise.all(Array.from(activeJobs));
+  }
+  crawlQueue.close();
+  jobStore.close();
+  logger.info("Worker shut down complete");
+  process.exit(0);
+}
+process.on("SIGTERM", () => {
+  logger.info("SIGTERM received");
+  shutdown();
+});
+process.on("SIGINT", () => {
+  logger.info("SIGINT received");
+  shutdown();
+});
+process.on("uncaughtException", (error) => {
+  logger.error(
+    { error: error.message, stack: error.stack },
+    "Uncaught exception",
+  );
+  shutdown();
+});
+process.on("unhandledRejection", (reason) => {
+  logger.error(
+    { reason: reason instanceof Error ? reason.message : reason },
+    "Unhandled rejection",
+  );
+  shutdown();
+});
+await startWorker();
+</file>
+
+<file path="CLAUDE.md">
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+Context Crawler is a website crawling tool that generates knowledge files from URLs. It uses a queue-based worker architecture with SQLite for persistent job storage and processing.
+
+**Key Technologies:**
+
+- TypeScript with strict mode enabled
+- Crawlee + Playwright for web crawling
+- SQLite (better-sqlite3) for queue and job persistence
+- Express for REST API
+- Pino for structured logging
+- Zod for schema validation
+
+## Development Commands
+
+**Build:**
+
+```bash
+bun run build         # Compile TypeScript to dist/
+bun run check         # Type-check without emitting files
+```
+
+**Run Application:**
+
+```bash
+# CLI modes
+bun run cli -- list                      # List all jobs and their configs
+bun run cli -- single                    # Run single job (all configs in that job, interactive)
+bun run cli -- single <jobName>          # Run specific job by name
+bun run cli -- batch                     # Run multiple jobs (interactive, with aggregation)
+bun run cli -- batch nextJs react        # Run specific jobs by name
+bun run dev                              # Same as batch mode
+
+# API server + worker
+bun start                                # Build, generate swagger, start both server and worker
+bun run start:server                     # Start API server only
+bun run start:worker                     # Start worker only
+```
+
+**Utilities:**
+
+```bash
+bun run generate:jobs    # Regenerate configurations/index.ts (run after adding/removing job files)
+bun run queue:clear      # Clear completed/failed jobs from queue
+bun run swagger          # Generate Swagger API docs
+bun run fmt              # Format code with Prettier
+bun run prettier:check   # Check code formatting
+```
+
+**Important:** Playwright browsers are installed automatically during `npm install` via the preinstall hook.
+
+## Architecture
+
+### Three-Tier Architecture
+
+1. **CLI Layer** (`src/cli.ts`): Commander-based CLI with three modes:
+   - `list`: Display all available jobs with config counts
+   - `single`: Run a single job (all configs within that job)
+   - `batch`: Run multiple jobs with aggregation
+     - Direct mode: Executes configs sequentially, aggregates outputs to `output/jobs/{job-name}.json`
+     - Queue mode: Adds all configs to queue for worker processing
+     - Continues processing on config failure, logs comprehensive summary
+     - Cleans up temporary storage after aggregation
+   - Note: Terminology can be confusing - a "job" is a file in `configurations/jobs/`, each containing one or more "configs" (crawl configurations)
+
+2. **API Layer** (`src/server.ts`): Express REST API for:
+   - `POST /crawl`: Submit single crawl job (by task name or custom config)
+   - `POST /crawl/batch`: Submit entire job (queues all tasks)
+   - `GET /crawl/status/:jobId`: Check job status
+   - `GET /crawl/results/:jobId`: Download results (streams JSON)
+   - `GET /configurations`: List available jobs, tasks, and legacy batches
+   - Authentication via `X-API-KEY` header when `API_KEY` env var is set
+
+3. **Worker Layer** (`src/worker.ts`): Background job processor:
+   - Polls SQLite queue for pending jobs
+   - Processes jobs concurrently (controlled by `WORKER_CONCURRENCY`)
+   - Implements exponential backoff retry logic
+   - Handles graceful shutdown and cleanup
+
+### Core Components
+
+**Queue System** (`src/queue.ts`):
+
+- SQLite-based job queue with WAL mode for better concurrency
+- Job states: `pending` → `claimed` → `completed`/`failed`
+- Automatic retry with exponential backoff
+- Priority support and claim timeouts
+
+**Job Store** (`src/job-store.ts`):
+
+- Persists job metadata, status, and results
+- Tracks job lifecycle from submission to completion
+- Stores output file paths and error information
+
+**Configuration System** (`src/config.ts`):
+
+- Job-based configuration in `configurations/jobs/` directory
+- Each job file (`.ts`) contains one or more configs (crawl configurations)
+- Supports both single object and array formats in job files
+- Job registry: `configurations/index.ts` (auto-generated by `bun run generate:jobs`)
+- Global config: `configurations/global.config.ts` (manually edit maxPagesToCrawl and maxTokens)
+- Terminology: "Job" = file in jobs/, "Config" = individual crawl configuration within a job
+
+**Task Runner** (`src/task-runner.ts`):
+
+- Centralizes task execution logic shared between worker and CLI
+- Wraps the crawler with error handling and cleanup
+- Returns structured result with success status, output file, and error message
+- Ensures storage cleanup happens even on failure
+
+**Crawler Core** (`src/core.ts`):
+
+- Uses Crawlee's PlaywrightCrawler for robust crawling
+- Supports XPath (starting with `/`) and CSS selectors
+- Handles cookies, resource exclusions, and wait timeouts
+- Implements automatic file splitting based on token limits and file size
+- Isolated storage per job to enable concurrent crawling
+
+**Schema** (`src/schema.ts`):
+
+- Zod schemas for config validation
+- `globalConfigSchema`: Global settings (maxPagesToCrawl, maxTokens)
+- `configSchema`: Individual crawl configuration
+- Helper functions for generating names and file paths from URLs
+
+### Data Flow
+
+```
+CLI/API → Job Store → Queue → Worker → Crawler → Output Files
+                                  ↓
+                            Job Store (status updates)
+```
+
+1. User submits crawl via CLI or API
+2. Job created in Job Store with status `pending`
+3. Job added to Queue
+4. Worker claims job from Queue
+5. Worker processes crawl using Crawler Core
+6. Crawler writes output to `output/` directory
+7. Worker updates Job Store with results/errors
+8. Worker marks Queue job as completed/failed
+
+### Concurrency and Isolation
+
+**Per-Job Isolation:**
+
+- Each crawl gets unique `storageDir` (e.g., `storage/job-{uuid}`)
+- Each crawl gets unique `datasetName` (e.g., `crawl-{timestamp}-{random}`)
+- Prevents Crawlee storage conflicts during concurrent crawling
+
+**Worker Concurrency:**
+
+- Default: 2 concurrent jobs (configurable via `WORKER_CONCURRENCY`)
+- Reduced from 5 to prevent memory exhaustion and file system race conditions
+- Each job runs in isolated storage to avoid conflicts
+
+## Configuration Structure
+
+**Job Registry** (`configurations/index.ts`):
+
+This file is **auto-generated** by `scripts/generate-job-index.ts`. Run `bun run generate:jobs` after adding or removing job files.
+
+```typescript
+// AUTO-GENERATED - DO NOT EDIT
+export const jobs = {
+  'ai-sdk': aiSdk,
+  'next-js-16': nextJs16,
+  'polar-sh': polarSh,
+  prisma,
+  'react-19': react19,
+  trpc,
+  zod,
+} satisfies Record<string, JobTasks>;
+```
+
+**Global Configuration** (`configurations/global.config.ts`):
+
+Edit this file to modify global crawl behavior:
+
+```typescript
+export const globalConfig: GlobalConfig = {
+  maxPagesToCrawl: 'unlimited',  // or a number
+  maxTokens: 'unlimited',         // or a number
+};
+```
+
+Both fields accept either a number or the string `'unlimited'` for no limit.
+
+**Job Modules** (`configurations/jobs/{job-name}.ts`):
+
+Job modules export typed configs using the `defineJob` helper, giving you autocomplete for every field:
+
+**Single Config Job** (`configurations/jobs/zod.ts`):
+
+```ts
+import { defineJob } from '../types.js';
+
+export default defineJob({
+  entry: 'https://zod.dev',
+  match: [
+    'https://zod.dev/basics',
+    'https://zod.dev/api',
+    'https://zod.dev/error-customization',
+    // ... more URLs
+  ],
+  selector: 'article',
+});
+```
+
+**Multi-Config Job** (`configurations/jobs/next-js-16.ts`):
+
+```ts
+import { defineJob } from '../types.js';
+
+export default defineJob([
+  {
+    entry: 'https://nextjs.org/docs/app/getting-started/proxy',
+    match: [
+      'https://nextjs.org/docs/app/api-reference/**',
+      'https://nextjs.org/docs/architecture/accessibility',
+      'https://nextjs.org/docs/app/getting-started/metadata-and-og-images',
+    ],
+    selector: 'article',
+  },
+]);
+```
+
+**Configuration Fields:**
+
+```ts
+defineJob({
+  // Required fields
+  entry: 'https://react.dev/reference/react',  // Single entry point URL
+  match: 'https://react.dev/reference/**',     // URL pattern(s) to match (string or array)
+  selector: 'article',                          // CSS selector for content extraction
+
+  // Optional fields
+  exclude: ['**/archive/**'],                   // URL patterns to exclude
+  autoDiscoverNav: true,                        // Discover nav links before crawling (default: true)
+  discoverySelector: "nav, aside, [role='navigation']",  // CSS selector for nav discovery (default shown)
+  outputFileName: 'custom-name.json',           // Override output filename
+  cookie: { name: 'consent', value: 'yes' },    // Cookie(s) to inject
+  onVisitPage: async ({ page, pushData }) => {  // Hook for custom page interactions
+    await page.click('#load-more');
+    await page.waitForTimeout(1000);
+  },
+  waitForSelectorTimeout: 10000,                // Timeout in ms for selector
+  resourceExclusions: ['image', 'font'],        // Resource types to block
+  maxFileSize: 50,                              // Max file size in MB
+  storageDir: './storage/custom',               // Crawlee storage directory
+  datasetName: 'custom-dataset',                // Crawlee dataset name
+});
+```
+
+**Job Organization:**
+
+- All jobs defined in `configurations/jobs/` directory
+- Each `.ts` module exports a job (e.g., `next-js-16.ts`, `react-19.ts`)
+- Job names used in CLI: `bun run cli -- batch nextJs react`
+- Output per job: `output/jobs/{job-name}.json` (aggregated from all configs in that job)
+
+**Migration from Legacy Structure:**
+
+- Migration script: `bun run scripts/migrate-configs.ts` (already completed)
+- All configurations now use the typed job modules in `configurations/jobs/`
+
+## Output Management
+
+**File Naming:**
+
+- Batch/Single job mode: `output/jobs/{job-name}.json` (aggregated from all successful configs)
+- Individual config outputs are written to temporary storage during execution
+- Queue mode: Each config writes to its designated output file
+
+**Note:** Individual config outputs during job execution are written to temporary storage and automatically cleaned up after aggregation.
+
+**Job Output Aggregation:**
+
+- Individual configs write to temporary storage during job execution
+- All successful config outputs are merged into a single array
+- Failed configs are logged but don't prevent aggregation
+- Temporary storage directories and temp files are cleaned up after aggregation
+- Only the final aggregated file remains in `output/jobs/{job-name}.json`
+- Summary includes: X/Y configs successful, Z failed
+
+**Automatic Splitting:**
+Files split when exceeding limits (creates numbered files: `output-1.json`, `output-2.json`, etc.):
+
+- Token limit: `maxTokens` from global config (checked with `gpt-tokenizer`)
+- File size limit: `maxFileSize` from individual config (in MB)
+
+**Output Format:**
+
+```json
+[
+  {
+    "title": "Page Title",
+    "url": "https://example.com/page",
+    "html": "Extracted content..."
+  }
+]
+```
+
+## Environment Configuration
+
+Copy `.env.example` to `.env`:
+
+```env
+# API Server
+API_PORT=5000
+API_HOST=localhost
+API_KEY=                      # Optional: enables auth when set
+
+# Worker
+WORKER_CONCURRENCY=2          # Concurrent crawl jobs
+POLL_INTERVAL_MS=1000         # Queue polling frequency
+MAX_POLL_INTERVAL_MS=10000    # Max backoff when queue empty
+JOB_TIMEOUT_MS=1800000        # Job timeout (30 min)
+BACKOFF_DELAY_MS=5000         # Initial retry delay
+
+# Logging
+LOG_LEVEL=info
+NODE_ENV=development
+```
+
+## TypeScript Configuration
+
+- Extends `@apify/tsconfig`
+- Strict mode enabled with all strictness flags
+- `noUncheckedIndexedAccess: true` for safer array access
+- ES2022 target and module system
+- Output to `dist/` directory
+
+## Important Implementation Details
+
+**Crawlee Dataset Isolation:**
+
+- Each crawl job must have unique `datasetName` and `storageDir`
+- Generated in `src/core.ts` when not provided in config
+- Critical for concurrent job processing without data corruption
+
+**SQLite Configuration:**
+
+- WAL (Write-Ahead Logging) mode enabled for better concurrency
+- Two databases: `data/queue.db` (queue) and `data/jobs.db` (job metadata)
+- Automatic directory creation for database paths
+
+**Selector Support:**
+
+- XPath selectors: Must start with `/` (e.g., `//article[@class="content"]`)
+- CSS selectors: Everything else (e.g., `article.content`)
+- Evaluation happens in browser context via Playwright
+
+**Error Handling:**
+
+- Failed jobs retry with exponential backoff
+- Default max attempts: 3
+- Retry delay doubles each attempt (starting at `BACKOFF_DELAY_MS`)
+- Worker handles cleanup on job failure
+
+**Graceful Shutdown:**
+
+- Worker listens for SIGTERM/SIGINT
+- Completes active jobs before exiting
+- Releases claimed jobs back to queue if needed
+
+## CLI Override Flags
+
+Any config field can be overridden via CLI:
+
+```bash
+bun run cli -- single my-crawler \
+  --outputFileName custom.json \
+  --maxFileSize 100 \
+  --waitForSelectorTimeout 5000
+```
+
+This allows quick config adjustments without editing job files.
+</file>
+
+<file path="src/cli.ts">
+#!/usr/bin/env node
+import { program } from 'commander';
+import { randomUUID } from 'crypto';
+import { createWriteStream } from 'fs';
+import { mkdir, mkdtemp, readFile, rm } from 'fs/promises';
+import inquirer from 'inquirer';
+import { tmpdir } from 'os';
+import { dirname, join } from 'path';
+import {
+	getAllJobNames,
+	getJobConfigs,
+	type JobName,
+} from './config.js';
+import { jobStore } from './job-store.js';
+import logger from './logger.js';
+import { crawlQueue } from './queue.js';
+import { Config, configSchema, generateOutputFileName, NamedConfig } from './schema.js';
+import { runTask } from './task-runner.js';
+const packageJsonUrl = new URL('../../package.json', import.meta.url);
+const packageInfo = JSON.parse(
+	await readFile(packageJsonUrl, 'utf-8')
+) as { version: string; description: string };
+const { version, description } = packageInfo;
+const messages = {
+	urls: 'Enter starting URLs (comma-separated for multiple):',
+	match: 'What is the URL pattern you want to match?',
+	selector: 'What is the CSS selector you want to match?',
+	outputFileName: 'What is the name of the output file?',
+	job: 'Name of the job to run',
+};
+program.version(version).description(description);
+program
+	.command('single [jobName]')
+	.description('Run a single job (all configs in the job)')
+	.option('-j, --job <string>', messages.job)
+	.action(async (jobNameArg?: string, options?: { job?: string }) => {
+		let selectedJobName: string;
+		if (jobNameArg) {
+			selectedJobName = jobNameArg;
+		} else if (options?.job) {
+			selectedJobName = options.job;
+		} else {
+			const availableJobs = getAllJobNames();
+			if (availableJobs.length === 0) {
+				logger.error('No jobs found in configurations');
+				process.exit(1);
+			}
+			const jobChoices = availableJobs.map((name) => {
+				const count = getJobConfigs(name as JobName).length;
+				return {
+					name: `${name} (${count} ${count === 1 ? 'config' : 'configs'})`,
+					value: name,
+				};
+			});
+			const jobAnswer = await inquirer.prompt({
+				type: 'list',
+				name: 'jobName',
+				message: 'Select a job to run:',
+				choices: jobChoices,
+			});
+			selectedJobName = jobAnswer.jobName;
+		}
+		const jobConfigs = getJobConfigs(selectedJobName as JobName);
+		if (!jobConfigs || jobConfigs.length === 0) {
+			logger.error({ job: selectedJobName }, `Job '${selectedJobName}' not found or is empty`);
+			const availableJobs = getAllJobNames();
+			logger.info(`Available jobs: ${availableJobs.join(', ')}`);
+			process.exit(1);
+		}
+		logger.info(
+			{ job: selectedJobName, configCount: jobConfigs.length },
+			`Running job '${selectedJobName}' with ${jobConfigs.length} ${
+				jobConfigs.length === 1 ? 'config' : 'configs'
+			}`
+		);
+		const tempDir = await mkdtemp(join(tmpdir(), 'context-crawler-'));
+		try {
+			const results: {
+				successful: Array<{ config: NamedConfig; outputFile: string }>;
+				failed: Array<{ config: NamedConfig; error: string }>;
+			} = {
+				successful: [],
+				failed: [],
+			};
+			for (let i = 0; i < jobConfigs.length; i++) {
+				const config = jobConfigs[i]!;
+				logger.info(
+					{
+						progress: `${i + 1}/${jobConfigs.length}`,
+						job: selectedJobName,
+					},
+					`Processing config ${i + 1}/${jobConfigs.length}`
+				);
+				const tempOutputPath = join(tempDir, `config-${i}.json`);
+				const tempConfig = { ...config, outputFileName: tempOutputPath };
+				const result = await runTask(tempConfig, selectedJobName);
+				if (result.success && result.outputFile) {
+					results.successful.push({
+						config,
+						outputFile: result.outputFile.toString(),
+					});
+					logger.info(
+						{
+							progress: `${i + 1}/${jobConfigs.length}`,
+							job: selectedJobName,
+						},
+						`Completed config ${i + 1}/${jobConfigs.length}`
+					);
+				} else {
+					results.failed.push({
+						config,
+						error: result.error || 'Unknown error',
+					});
+					logger.error(
+						{
+							progress: `${i + 1}/${jobConfigs.length}`,
+							job: selectedJobName,
+							error: result.error,
+						},
+						`Failed config ${i + 1}/${jobConfigs.length}`
+					);
+				}
+			}
+			const successCount = results.successful.length;
+			const failCount = results.failed.length;
+			const totalCount = successCount + failCount;
+			logger.info(
+				{ job: selectedJobName, successCount, failCount, totalCount },
+				`Job '${selectedJobName}' completed: ${successCount}/${totalCount} successful, ${failCount} failed`
+			);
+			if (successCount > 0) {
+				try {
+					const aggregatedOutputPath = generateOutputFileName(selectedJobName);
+					await mkdir(dirname(aggregatedOutputPath), { recursive: true });
+					const writeStream = createWriteStream(aggregatedOutputPath, {
+						encoding: 'utf-8',
+					});
+					writeStream.write('[\n');
+					let itemCount = 0;
+					let isFirstFile = true;
+					for (const { outputFile } of results.successful) {
+						const content = await readFile(outputFile, 'utf-8');
+						const data = JSON.parse(content);
+						const items = Array.isArray(data) ? data : [data];
+						for (const item of items) {
+							if (!isFirstFile) {
+								writeStream.write(',\n');
+							}
+							writeStream.write('  ');
+							writeStream.write(JSON.stringify(item, null, 2).replace(/\n/g, '\n  '));
+							isFirstFile = false;
+							itemCount++;
+						}
+					}
+					writeStream.write('\n]\n');
+					writeStream.end();
+					await new Promise<void>((resolve, reject) => {
+						writeStream.on('finish', () => resolve());
+						writeStream.on('error', reject);
+					});
+					logger.info(
+						{
+							job: selectedJobName,
+							itemCount,
+							outputFile: aggregatedOutputPath,
+						},
+						`Streamed ${itemCount} items to ${aggregatedOutputPath}`
+					);
+				} catch (error) {
+					logger.error(
+						{
+							job: selectedJobName,
+							error: error instanceof Error ? error.message : error,
+						},
+						`Failed to aggregate outputs for job '${selectedJobName}'`
+					);
+				}
+			} else {
+				logger.info(
+					{ job: selectedJobName },
+					`Skipping aggregation for '${selectedJobName}' - no successful configs`
+				);
+			}
+		} finally {
+			try {
+				await rm(tempDir, { recursive: true, force: true });
+				logger.debug({ tempDir }, 'Cleaned up temp directory');
+			} catch (error) {
+				logger.warn(
+					{
+						tempDir,
+						error: error instanceof Error ? error.message : error,
+					},
+					'Failed to cleanup temp directory'
+				);
+			}
+		}
+	});
+program
+	.command('batch [names...]')
+	.description('Run one or more jobs')
+	.option('-q, --queue', 'Queue jobs for worker instead of running directly')
+	.action(async (names: string[], options: { queue?: boolean }) => {
+		let selectedBatches: string[];
+		if (!names || names.length === 0) {
+			const availableJobs = getAllJobNames();
+			if (availableJobs.length === 0) {
+				logger.error('No jobs found in configurations');
+				process.exit(1);
+			}
+			const jobChoices = availableJobs.map((name) => {
+				const count = getJobConfigs(name as JobName).length;
+				return {
+					name: `${name} (${count} ${count === 1 ? 'config' : 'configs'})`,
+					value: name,
+				};
+			});
+			const jobAnswer = await inquirer.prompt({
+				type: 'checkbox',
+				name: 'jobs',
+				message: 'Select jobs to crawl:',
+				choices: jobChoices,
+				validate: (answer) => {
+					if ((answer as unknown as string[]).length === 0) {
+						return 'You must select at least one job';
+					}
+					return true;
+				},
+			});
+			selectedBatches = jobAnswer.jobs;
+		} else {
+			selectedBatches = names;
+		}
+		for (const name of selectedBatches) {
+			const jobConfigs = getJobConfigs(name as JobName);
+			if (!jobConfigs || jobConfigs.length === 0) {
+				logger.error({ job: name }, `Job '${name}' not found or is empty`);
+				const availableJobs = getAllJobNames();
+				logger.info(`Available jobs: ${availableJobs.join(', ')}`);
+				process.exit(1);
+			}
+		}
+		let useQueue = options.queue ?? false;
+		if (options.queue === undefined) {
+			const modeAnswer = await inquirer.prompt({
+				type: 'list',
+				name: 'mode',
+				message: 'How do you want to run the crawl?',
+				choices: [
+					{
+						name: 'Run directly (wait for completion)',
+						value: 'direct',
+					},
+					{
+						name: 'Queue for worker (async)',
+						value: 'queue',
+					},
+				],
+			});
+			useQueue = modeAnswer.mode === 'queue';
+		}
+		const allConfigs: Array<{ jobName: string; config: NamedConfig }> = [];
+		for (const jobName of selectedBatches) {
+			const jobConfigs = getJobConfigs(jobName as JobName);
+			for (const config of jobConfigs) {
+				allConfigs.push({ jobName, config });
+			}
+		}
+		logger.info(
+			{
+				jobs: selectedBatches.join(', '),
+				totalConfigs: allConfigs.length,
+				mode: useQueue ? 'queue' : 'direct',
+			},
+			`Starting crawl for ${selectedBatches.length} ${
+				selectedBatches.length === 1 ? 'job' : 'jobs'
+			} (${allConfigs.length} total ${
+				allConfigs.length === 1 ? 'config' : 'configs'
+			})`
+		);
+		if (useQueue) {
+			const jobIds: string[] = [];
+			for (const { jobName, config } of allConfigs) {
+				const jobId = randomUUID();
+				const outputFileName = generateOutputFileName(jobName);
+				const configWithFileName = {
+					...config,
+					outputFileName,
+				};
+				jobStore.createJob(jobId, configWithFileName);
+				await crawlQueue.add('crawl', { config: configWithFileName, jobName }, { jobId });
+				jobIds.push(jobId);
+				logger.info(
+					{ jobId, job: jobName, outputFile: outputFileName },
+					`Queued: ${jobName} (job ID: ${jobId})`
+				);
+			}
+			logger.info(
+				{ totalJobs: jobIds.length },
+				`Successfully queued ${jobIds.length} ${
+					jobIds.length === 1 ? 'job' : 'jobs'
+				}`
+			);
+			logger.info('Worker will process these jobs asynchronously');
+			logger.info('Check job status via API: GET /crawl/status/{jobId}');
+		} else {
+			const tempDir = await mkdtemp(join(tmpdir(), 'context-crawler-'));
+			try {
+				const jobResults: Record<
+					string,
+					{
+						successful: Array<{ config: NamedConfig; outputFile: string }>;
+						failed: Array<{ config: NamedConfig; error: string }>;
+					}
+				> = {};
+				for (const jobName of selectedBatches) {
+					jobResults[jobName] = {
+						successful: [],
+						failed: [],
+					};
+				}
+				for (let i = 0; i < allConfigs.length; i++) {
+					const { jobName, config } = allConfigs[i]!;
+					logger.info(
+						{
+							progress: `${i + 1}/${allConfigs.length}`,
+							job: jobName,
+						},
+						`Crawling config ${i + 1}/${allConfigs.length} (from ${jobName})`
+					);
+					const tempOutputPath = join(tempDir, `${jobName}-${i}.json`);
+					const tempConfig = { ...config, outputFileName: tempOutputPath };
+					const result = await runTask(tempConfig, jobName);
+					if (result.success && result.outputFile) {
+						jobResults[jobName]!.successful.push({
+							config,
+							outputFile: result.outputFile.toString(),
+						});
+						logger.info(
+							{
+								progress: `${i + 1}/${allConfigs.length}`,
+								job: jobName,
+							},
+							`Completed config ${i + 1}/${allConfigs.length}`
+						);
+					} else {
+						jobResults[jobName]!.failed.push({
+							config,
+							error: result.error || 'Unknown error',
+						});
+						logger.error(
+							{
+								progress: `${i + 1}/${allConfigs.length}`,
+								job: jobName,
+								error: result.error,
+							},
+							`Failed config ${i + 1}/${allConfigs.length}`
+						);
+					}
+				}
+				for (const jobName of selectedBatches) {
+					const results = jobResults[jobName]!;
+					const successCount = results.successful.length;
+					const failCount = results.failed.length;
+					const totalCount = successCount + failCount;
+					logger.info(
+						{ job: jobName, successCount, failCount, totalCount },
+						`Job '${jobName}' completed: ${successCount}/${totalCount} successful, ${failCount} failed`
+					);
+					if (successCount > 0) {
+						try {
+							const aggregatedOutputPath = generateOutputFileName(jobName);
+							await mkdir(dirname(aggregatedOutputPath), { recursive: true });
+							const writeStream = createWriteStream(aggregatedOutputPath, {
+								encoding: 'utf-8',
+							});
+							writeStream.write('[\n');
+							let itemCount = 0;
+							let isFirstFile = true;
+							for (const { outputFile } of results.successful) {
+								const content = await readFile(outputFile, 'utf-8');
+								const data = JSON.parse(content);
+								const items = Array.isArray(data) ? data : [data];
+								for (const item of items) {
+									if (!isFirstFile) {
+										writeStream.write(',\n');
+									}
+									writeStream.write('  ');
+									writeStream.write(JSON.stringify(item, null, 2).replace(/\n/g, '\n  '));
+									isFirstFile = false;
+									itemCount++;
+								}
+							}
+							writeStream.write('\n]\n');
+							writeStream.end();
+							await new Promise<void>((resolve, reject) => {
+								writeStream.on('finish', () => resolve());
+								writeStream.on('error', reject);
+							});
+							logger.info(
+								{
+									job: jobName,
+									itemCount,
+									outputFile: aggregatedOutputPath,
+								},
+								`Streamed ${itemCount} items to ${aggregatedOutputPath}`
+							);
+						} catch (error) {
+							logger.error(
+								{
+									job: jobName,
+									error: error instanceof Error ? error.message : error,
+								},
+								`Failed to aggregate outputs for job '${jobName}'`
+							);
+						}
+					} else {
+						logger.info(
+							{ job: jobName },
+							`Skipping aggregation for '${jobName}' - no successful configs`
+						);
+					}
+				}
+				const totalSuccessful = Object.values(jobResults).reduce(
+					(sum, r) => sum + r.successful.length,
+					0
+				);
+				const totalFailed = Object.values(jobResults).reduce(
+					(sum, r) => sum + r.failed.length,
+					0
+				);
+				logger.info(
+					{
+						jobs: selectedBatches.join(', '),
+						totalSuccessful,
+						totalFailed,
+						total: allConfigs.length,
+					},
+					`All jobs completed: ${totalSuccessful}/${allConfigs.length} successful, ${totalFailed} failed`
+				);
+			} finally {
+				try {
+					await rm(tempDir, { recursive: true, force: true });
+					logger.debug({ tempDir }, 'Cleaned up temp directory');
+				} catch (error) {
+					logger.warn(
+						{
+							tempDir,
+							error: error instanceof Error ? error.message : error,
+						},
+						'Failed to cleanup temp directory'
+					);
+				}
+			}
+		}
+	});
+program
+	.command('list')
+	.description('List all available jobs and their config counts')
+	.action(() => {
+		const jobNames = getAllJobNames();
+		console.log('\nAvailable Jobs:');
+		if (jobNames.length === 0) {
+			console.log('  (none found)');
+		} else {
+			jobNames.forEach((jobName: string) => {
+				const configs = getJobConfigs(jobName as JobName);
+				const configCount = configs.length;
+				console.log(
+					`  - ${jobName} (${configCount} ${configCount === 1 ? 'config' : 'configs'})`
+				);
+			});
+		}
+		console.log();
+	});
+program.parse();
+</file>
+
+<file path="src/schema.ts">
+import { configDotenv } from 'dotenv';
+import type { Page } from 'playwright';
+import { z } from 'zod';
+configDotenv();
+export interface CrawledData {
+	title: string;
+	url: string;
+	html: string;
+	[key: string]: unknown;
+}
+export type OnVisitPageHook = (context: {
+	page: Page;
+	pushData: (data: Record<string, unknown>) => Promise<void>;
+}) => Promise<void>;
+const Page: z.ZodType<Page> = z.custom<Page>((val) => {
+	return (
+		typeof val === 'object' &&
+		val !== null &&
+		'goto' in val &&
+		'evaluate' in val &&
+		'title' in val
+	);
+});
+const onVisitPageHook: z.ZodType<OnVisitPageHook> = z.custom<OnVisitPageHook>(
+	(val) => {
+		return typeof val === 'function';
+	}
+);
+export const globalConfigSchema = z.object({
+	maxPagesToCrawl: z.union([z.number(), z.literal('unlimited')]),
+	maxTokens: z.union([z.number(), z.literal('unlimited')]),
+});
+export type GlobalConfig = z.infer<typeof globalConfigSchema>;
+export const configSchema = z.object({
+	entry: z.string().url(),
+	match: z.union([z.string(), z.array(z.string())]),
+	exclude: z.union([z.string(), z.array(z.string())]).optional(),
+	selector: z.string(),
+	autoDiscoverNav: z.boolean().optional().default(true),
+	discoverySelector: z
+		.string()
+		.optional()
+		.default("nav, aside, [role='navigation']"),
+	outputFileName: z.string().optional(),
+	cookie: z
+		.union([
+			z.object({
+				name: z.string(),
+				value: z.string(),
+			}),
+			z.array(
+				z.object({
+					name: z.string(),
+					value: z.string(),
+				})
+			),
+		])
+		.optional(),
+	onVisitPage: onVisitPageHook.optional(),
+	waitForSelectorTimeout: z.number().optional(),
+	resourceExclusions: z.array(z.string()).optional(),
+	maxFileSize: z.number().optional(),
+	storageDir: z.string().optional(),
+	datasetName: z.string().optional(),
+});
+export type Config = z.infer<typeof configSchema>;
+export type ConfigInput = z.input<typeof configSchema>;
+export type NamedConfig = Config;
+export function generateNameFromUrl(url: string): string {
+	try {
+		const urlObj = new URL(url);
+		const domain = urlObj.hostname.replace(/^www\./, '').split('.')[0];
+		// Extract only the first path segment (ignore query params and fragments)
+		const pathSegments = urlObj.pathname
+			.split('/')
+			.filter((segment) => segment.length > 0);
+		// Combine domain and first path segment only
+		const parts =
+			pathSegments.length > 0 ? [domain, pathSegments[0]] : [domain];
+		return parts.join('-').toLowerCase();
+	} catch (error) {
+		// Fallback to a simple sanitized version of the URL
+		return url
+			.replace(/[^a-zA-Z0-9]/g, '-')
+			.replace(/-+/g, '-')
+			.replace(/^-|-$/g, '')
+			.toLowerCase();
+	}
+}
+export function generateOutputFileName(jobName: string): string {
+	return `output/jobs/${jobName}.json`;
+}
+</file>
+
+<file path="src/config.ts">
+import type { JobRegistry } from "../configurations/index.js";
+import { jobs as configuredJobs } from "../configurations/index.js";
+import { globalConfig } from "../configurations/global.config.js";
+import { NamedConfig } from "./schema.js";
+export { globalConfig };
+const jobs = Object.freeze(configuredJobs) as Readonly<JobRegistry>;
+export type JobName = keyof JobRegistry;
+const jobNames = Object.freeze(Object.keys(jobs)) as readonly JobName[];
+const jobNameSet = new Set<string>(jobNames);
+export function isJobName(value: string): value is JobName {
+  return jobNameSet.has(value);
+}
+export function getJobConfigs(
+  jobName: JobName,
+): readonly NamedConfig[];
+export function getJobConfigs(
+  jobName: string,
+): readonly NamedConfig[];
+export function getJobConfigs(
+  jobName: string,
+): readonly NamedConfig[] {
+  if (!isJobName(jobName)) {
+    return [];
+  }
+  return jobs[jobName];
+}
+export function getAllJobNames(): string[] {
+  return Array.from(jobNames);
+}
+export function getAllConfigs(): NamedConfig[] {
+  const entries = Object.entries(jobs) as Array<
+    [keyof JobRegistry, readonly NamedConfig[]]
+  >;
+  const aggregated: NamedConfig[] = [];
+  for (const [_jobName, jobConfigs] of entries) {
+    for (const config of jobConfigs) {
+      aggregated.push(config);
+    }
+  }
+  return aggregated;
+}
+</file>
+
+<file path="src/server.ts">
+import cors from 'cors';
+import { randomUUID } from 'crypto';
+import { configDotenv } from 'dotenv';
+import express, { Express, NextFunction, Request, Response } from 'express';
+import { createReadStream } from 'fs';
+import { readFile, stat } from 'fs/promises';
+import net from 'net';
+import swaggerUi from 'swagger-ui-express';
+import {
+	getAllJobNames,
+	getJobConfigs,
+} from './config.js';
+import { jobStore } from './job-store.js';
+import logger from './logger.js';
+import { crawlQueue } from './queue.js';
+import { Config, configSchema, generateOutputFileName } from './schema.js';
+configDotenv();
+const DEFAULT_PORT = 5000;
+function parsePort(value: string | undefined): number | undefined {
+	if (!value) {
+		return undefined;
+	}
+	const portNumber = Number(value);
+	if (
+		Number.isNaN(portNumber) ||
+		!Number.isInteger(portNumber) ||
+		portNumber <= 0 ||
+		portNumber > 65535
+	) {
+		return undefined;
+	}
+	return portNumber;
+}
+async function isPortAvailable(host: string, port: number): Promise<boolean> {
+	return await new Promise<boolean>((resolve, reject) => {
+		const tester = net
+			.createServer()
+			.once('error', (error: NodeJS.ErrnoException) => {
+				if (error.code === 'EADDRINUSE' || error.code === 'EACCES') {
+					resolve(false);
+				} else {
+					reject(error);
+				}
+			})
+			.once('listening', () => {
+				tester.close(() => resolve(true));
+			})
+			.listen(port, host);
+	});
+}
+async function findAvailablePort(
+	host: string,
+	startPort: number,
+	strict: boolean
+): Promise<number> {
+	const maxAttempts = strict ? 1 : 20;
+	for (let attempt = 0; attempt < maxAttempts; attempt++) {
+		const candidatePort = startPort + attempt;
+		const available = await isPortAvailable(host, candidatePort);
+		if (available) {
+			return candidatePort;
+		}
+	}
+	throw new Error(
+		`Unable to find an available port starting at ${startPort} for host '${host}'`
+	);
+}
+const app: Express = express();
+const hostname = process.env.API_HOST || 'localhost';
+const apiPortRaw = process.env.API_PORT;
+const portEnvRaw = process.env.PORT;
+const parsedApiPort = parsePort(apiPortRaw);
+const parsedPortEnv = parsePort(portEnvRaw);
+const preferredPort = parsedApiPort ?? parsedPortEnv ?? DEFAULT_PORT;
+const hasExplicitPort =
+	Boolean(parsedPortEnv) ||
+	Boolean(
+		parsedApiPort !== undefined &&
+			parsedApiPort !== DEFAULT_PORT
+	);
+if (!parsedApiPort && apiPortRaw) {
+	logger.warn(
+		{ value: apiPortRaw },
+		'Invalid API_PORT value detected. Falling back to default port handling.'
+	);
+}
+if (!parsedPortEnv && portEnvRaw) {
+	logger.warn(
+		{ value: portEnvRaw },
+		'Invalid PORT value detected. Falling back to default port handling.'
+	);
+}
+if ((!apiPortRaw && !portEnvRaw) || !process.env.API_HOST) {
+	logger.warn(
+		{ preferredPort, hostname },
+		'Using default server configuration. Create a .env file from .env.example to customize.'
+	);
+}
+function authenticateApiKey(req: Request, res: Response, next: NextFunction): void {
+	const apiKey = process.env.API_KEY;
+	if (!apiKey) {
+		next();
+		return;
+	}
+	const requestApiKey = req.headers['x-api-key'];
+	if (!requestApiKey || requestApiKey !== apiKey) {
+		logger.warn({ path: req.path }, 'Unauthorized API access attempt');
+		res.status(401).json({ message: 'Unauthorized' });
+		return;
+	}
+	next();
+}
+function registerRoutes(): void {
+	app.post('/crawl', authenticateApiKey, async (req: Request, res: Response) => {
+		const { name, config: customConfig } = req.body;
+		let config: Config | undefined;
+		let jobName: string | undefined;
+		if (name && typeof name === 'string') {
+			const configs = getJobConfigs(name);
+			if (!configs || configs.length === 0) {
+				logger.warn({ name }, 'Job not found');
+				res.status(404).json({ message: `Job with name '${name}' not found.` });
+				return;
+			}
+			jobName = name;
+			config = configs[0];
+		} else if (customConfig && typeof customConfig === 'object') {
+			const validationResult = configSchema.safeParse(customConfig);
+			if (!validationResult.success) {
+				logger.warn(
+					{ errors: validationResult.error.issues },
+					'Invalid custom config'
+				);
+				res.status(400).json({
+					message: 'Invalid configuration',
+					errors: validationResult.error.issues,
+				});
+				return;
+			}
+			config = validationResult.data;
+			jobName = 'custom';
+		} else {
+			res.status(400).json({
+				message: "Invalid request body. Either 'name' (job name) or 'config' is required.",
+			});
+			return;
+		}
+		try {
+			const jobId = randomUUID();
+			if (!config || !jobName) {
+				throw new Error('Config or job name is missing');
+			}
+			const configWithFileName: Config = {
+				...config,
+				outputFileName: generateOutputFileName(jobName),
+			};
+			jobStore.createJob(jobId, configWithFileName);
+			await crawlQueue.add('crawl', { config: configWithFileName, jobName }, { jobId });
+			logger.info({ jobId, jobName }, 'Crawl job queued');
+			res.status(202).json({
+				jobId,
+				jobName,
+				message: 'Crawl job started',
+				statusUrl: `/crawl/status/${jobId}`,
+				resultsUrl: `/crawl/results/${jobId}`,
+			});
+		} catch (error) {
+			logger.error({ error }, 'Error starting job');
+			res.status(500).json({ message: 'Failed to start crawl job.' });
+		}
+	});
+	app.post('/crawl/batch', authenticateApiKey, async (req: Request, res: Response) => {
+		const { name } = req.body;
+		if (!name || typeof name !== 'string') {
+			res.status(400).json({
+				message: "Invalid request body. 'name' (job name) is required.",
+			});
+			return;
+		}
+		const configs = getJobConfigs(name);
+		if (!configs || configs.length === 0) {
+			logger.warn({ jobName: name }, 'Job not found or has no configs');
+			res.status(404).json({
+				message: `Job with name '${name}' not found or has no configs.`,
+				availableJobs: getAllJobNames(),
+			});
+			return;
+		}
+		try {
+			const queuedConfigs: Array<{
+				configIndex: number;
+				jobId: string;
+				statusUrl: string;
+				resultsUrl: string;
+			}> = [];
+			for (let i = 0; i < configs.length; i++) {
+				const config = configs[i]!;
+				const jobId = randomUUID();
+				const configWithFileName = {
+					...config,
+					outputFileName: generateOutputFileName(name),
+				};
+				jobStore.createJob(jobId, configWithFileName);
+				await crawlQueue.add('crawl', { config: configWithFileName, jobName: name }, { jobId });
+				queuedConfigs.push({
+					configIndex: i,
+					jobId,
+					statusUrl: `/crawl/status/${jobId}`,
+					resultsUrl: `/crawl/results/${jobId}`,
+				});
+				logger.info(
+					{ jobId, jobName: name, configIndex: i },
+					'Config queued for batch job'
+				);
+			}
+			logger.info(
+				{ jobName: name, configCount: queuedConfigs.length },
+				`Batch job '${name}' queued with ${queuedConfigs.length} configs`
+			);
+			res.status(202).json({
+				message: `Batch job '${name}' queued with ${queuedConfigs.length} ${
+					queuedConfigs.length === 1 ? 'config' : 'configs'
+				}.`,
+				jobName: name,
+				configCount: queuedConfigs.length,
+				configs: queuedConfigs,
+			});
+		} catch (error) {
+			logger.error({ error, jobName: name }, 'Error queuing batch job');
+			res.status(500).json({ message: 'Failed to queue batch job.' });
+		}
+	});
+	app.get('/crawl/status/:jobId', authenticateApiKey, (req: Request, res: Response) => {
+		const jobId = req.params.jobId;
+		if (!jobId) {
+			res.status(400).json({ message: 'Job ID is required' });
+			return;
+		}
+		const job = jobStore.getJobById(jobId);
+		if (!job) {
+			logger.warn({ jobId }, 'Job not found');
+			res.status(404).json({ message: 'Job not found' });
+			return;
+		}
+		res.json({
+			jobId: job.id,
+			status: job.status,
+			createdAt: job.createdAt,
+			completedAt: job.completedAt,
+			...(job.status === 'failed' && { error: job.error }),
+		});
+	});
+	app.get('/crawl/results/:jobId', authenticateApiKey, async (req: Request, res: Response) => {
+		const jobId = req.params.jobId;
+		if (!jobId) {
+			res.status(400).json({ message: 'Job ID is required' });
+			return;
+		}
+		const job = jobStore.getJobById(jobId);
+		if (!job) {
+			logger.warn({ jobId }, 'Job not found');
+			res.status(404).json({ message: 'Job not found' });
+			return;
+		}
+		if (job.status === 'pending' || job.status === 'running') {
+			res.status(202).json({
+				message: 'Job is still processing',
+				status: job.status,
+				statusUrl: `/crawl/status/${jobId}`,
+			});
+			return;
+		}
+		if (job.status === 'failed') {
+			logger.warn({ jobId, error: job.error }, 'Failed job results requested');
+			res.status(500).json({
+				message: 'Job failed',
+				error: job.error,
+			});
+			return;
+		}
+		if (!job.outputFile) {
+			logger.warn({ jobId }, 'No output file generated');
+			res.status(404).json({
+				message: 'No output file generated',
+			});
+			return;
+		}
+		try {
+			await stat(job.outputFile);
+			res.contentType('application/json');
+			const fileStream = createReadStream(job.outputFile, 'utf-8');
+			fileStream.pipe(res);
+			return;
+		} catch (error) {
+			logger.error({ jobId, error }, 'Error reading output file');
+			res.status(500).json({ message: 'Error reading output file' });
+		}
+	});
+	app.get('/configurations', authenticateApiKey, async (_req: Request, res: Response) => {
+		try {
+			const jobNames = getAllJobNames();
+			const jobs = jobNames.map((jobName) => {
+				const configs = getJobConfigs(jobName);
+				return {
+					name: jobName,
+					configCount: configs.length,
+					outputFileName: generateOutputFileName(jobName),
+				};
+			});
+			res.json({
+				jobs,
+			});
+		} catch (error) {
+			logger.error({ error }, 'Error fetching configurations');
+			res.status(500).json({ message: 'Error fetching configurations' });
+		}
+	});
+}
+(async () => {
+	const swaggerDocument = JSON.parse(
+		await readFile(new URL('../swagger-output.json', import.meta.url), 'utf-8')
+	) as Record<string, unknown>;
+	app.use(cors());
+	app.use(express.json());
+	app.use(
+		'/api-docs',
+		...(swaggerUi.serve as unknown as express.RequestHandler[]),
+		swaggerUi.setup(swaggerDocument) as unknown as express.RequestHandler
+	);
+	registerRoutes();
+	await crawlQueue.initialize();
+	let port = preferredPort;
+	try {
+		port = await findAvailablePort(hostname, preferredPort, hasExplicitPort);
+		if (!hasExplicitPort && port !== preferredPort) {
+			logger.warn(
+				{ requestedPort: preferredPort, fallbackPort: port },
+				`Preferred port ${preferredPort} is unavailable. Using ${port} instead.`
+			);
+		}
+	} catch (error) {
+		logger.error(
+			{
+				error: error instanceof Error ? error.message : error,
+				host: hostname,
+				requestedPort: preferredPort,
+			},
+			'Failed to resolve a listening port'
+		);
+		process.exit(1);
+	}
+	process.env.API_PORT = port.toString();
+	const server = app.listen(port, hostname, () => {
+		logger.info(`API server listening at http://${hostname}:${port}`);
+		logger.info(
+			{
+				address: server.address(),
+				listening: server.listening,
+				constructor: server.constructor.name,
+			},
+			'HTTP server address info'
+		);
+	});
+	server.on('close', () => {
+		logger.info('HTTP server close event emitted');
+	});
+	server.on('listening', () => {
+		logger.info('HTTP server listening event emitted');
+	});
+	server.on('error', (error) => {
+		logger.error({ error }, 'HTTP server error event emitted');
+	});
+	setImmediate(() => {
+		logger.info(
+			{ address: server.address(), listening: server.listening },
+			'HTTP server immediate state'
+		);
+	});
+	setTimeout(() => {
+		logger.info({ address: server.address() }, 'HTTP server address after delay');
+	}, 1000).unref();
+	let isShuttingDown = false;
+	let resolveShutdown: ((code: number) => void) | undefined;
+	const shutdownComplete = new Promise<number>((resolve) => {
+		resolveShutdown = resolve;
+	});
+	async function shutdown(signal: string, code = 0): Promise<void> {
+		if (isShuttingDown) {
+			return;
+		}
+		isShuttingDown = true;
+		logger.info({ signal }, 'Shutdown signal received');
+		if (server.listening) {
+			await new Promise<void>((resolve) => {
+				server.close(() => {
+					logger.info('HTTP server closed');
+					resolve();
+				});
+			});
+		} else {
+			logger.info('HTTP server already closed');
+		}
+		try {
+			crawlQueue.close();
+			logger.info('Queue connection closed');
+		} catch (error) {
+			logger.error(
+				{ error: error instanceof Error ? error.message : error },
+				'Error closing queue connection'
+			);
+		}
+		try {
+			jobStore.close();
+			logger.info('Job store connection closed');
+		} catch (error) {
+			logger.error(
+				{ error: error instanceof Error ? error.message : error },
+				'Error closing job store connection'
+			);
+		}
+		logger.info('Server shutdown complete');
+		if (resolveShutdown) {
+			resolveShutdown(code);
+			resolveShutdown = undefined;
+		}
+	}
+	process.on('SIGTERM', () => shutdown('SIGTERM'));
+	process.on('SIGINT', () => shutdown('SIGINT'));
+	process.on('uncaughtException', (error) => {
+		logger.error(
+			{ error: error.message, stack: error.stack },
+			'Uncaught exception'
+		);
+		shutdown('uncaughtException', 1);
+	});
+	process.on('unhandledRejection', (reason) => {
+		logger.error(
+			{ reason: reason instanceof Error ? reason.message : reason },
+			'Unhandled rejection'
+		);
+		shutdown('unhandledRejection', 1);
+	});
+	const exitCode = await shutdownComplete;
+	process.exit(exitCode);
+})().catch((error) => {
+	logger.error({ error }, 'Failed to start server');
+	process.exit(1);
+});
+export default app;
+</file>
+
+<file path="src/core.ts">
+import {
+	Configuration,
+	Dataset,
+	downloadListOfUrls,
+	PlaywrightCrawler,
+} from 'crawlee';
+import { randomBytes } from 'crypto';
+import { PathLike } from 'fs';
+import { mkdir, rm, writeFile } from 'fs/promises';
+import { isWithinTokenLimit } from 'gpt-tokenizer';
+import { minimatch } from 'minimatch';
+import { basename, dirname, isAbsolute, join } from 'path';
+import { Page } from 'playwright';
+import { globalConfig } from './config.js';
+import logger from './logger.js';
+import {
+	Config,
+	configSchema,
+	CrawledData,
+	generateOutputFileName,
+} from './schema.js';
+let pageCounter = 0;
+type ConfigWithDataset = Config & { datasetName: string };
+export function getPageHtml(page: Page, selector = 'body') {
+	return page.evaluate((selector) => {
+		if (selector.startsWith('/')) {
+			const elements = document.evaluate(
+				selector,
+				document,
+				null,
+				XPathResult.ANY_TYPE,
+				null
+			);
+			let result = elements.iterateNext();
+			return result ? result.textContent || '' : '';
+		} else {
+			// Handle as a CSS selector
+			const el = document.querySelector(selector) as HTMLElement | null;
+			return el?.innerText || '';
+		}
+	}, selector);
+}
+/**
+ * Expand exclude patterns to match both the path and all subpaths
+ * Example: /support becomes ['/support', '/support/**']
+ * Patterns with wildcards are kept as-is to avoid breaking glob semantics
+ */
+function expandExcludePatterns(patterns: string[]): string[] {
+	const expanded = new Set<string>();
+	for (const pattern of patterns) {
+		expanded.add(pattern);
+		if (!pattern.includes('*') && !pattern.endsWith('/')) {
+			expanded.add(`${pattern}/**`);
+		}
+	}
+	return Array.from(expanded);
+}
+function normalizeAndExpandExcludes(exclude?: string | string[]): string[] {
+	const patterns = typeof exclude === 'string' ? [exclude] : (exclude ?? []);
+	return expandExcludePatterns(patterns);
+}
+async function discoverNavigationUrls(
+	page: Page,
+	discoverySelector: string,
+	matchPatterns: string[],
+	excludePatterns: string[]
+): Promise<string[]> {
+	const navUrls = await page.evaluate((selector) => {
+		const navElements = document.querySelectorAll(selector);
+		const urls: string[] = [];
+		navElements.forEach((nav) => {
+			const links = nav.querySelectorAll('a[href]');
+			links.forEach((link) => {
+				const href = (link as HTMLAnchorElement).href;
+				if (href && !href.startsWith('javascript:') && !href.startsWith('#')) {
+					urls.push(href);
+				}
+			});
+		});
+		return Array.from(new Set(urls));
+	}, discoverySelector);
+	const expandedExcludes = expandExcludePatterns(excludePatterns);
+	const filteredUrls = navUrls.filter((url) => {
+		const matchesInclude = matchPatterns.some((pattern) =>
+			minimatch(url, pattern)
+		);
+		if (!matchesInclude) {
+			return false;
+		}
+		const matchesExclude = expandedExcludes.some((pattern) =>
+			minimatch(url, pattern)
+		);
+		return !matchesExclude;
+	});
+	return filteredUrls;
+}
+export async function waitForXPath(page: Page, xpath: string, timeout: number) {
+	await page.waitForFunction(
+		(xpath) => {
+			const elements = document.evaluate(
+				xpath,
+				document,
+				null,
+				XPathResult.ANY_TYPE,
+				null
+			);
+			return elements.iterateNext() !== null;
+		},
+		xpath,
+		{ timeout }
+	);
+}
+export async function crawl(config: ConfigWithDataset) {
+	configSchema.parse(config);
+	if (process.env.NO_CRAWL !== 'true') {
+		const storageDir =
+			config.storageDir ||
+			join(process.cwd(), 'storage', 'jobs', config.datasetName);
+		await mkdir(storageDir, { recursive: true });
+		const crawler = new PlaywrightCrawler(
+			{
+				async requestHandler({ request, page, enqueueLinks, log, pushData }) {
+					const title = await page.title();
+					pageCounter++;
+					const maxPages = globalConfig.maxPagesToCrawl === 'unlimited'
+						? 'unlimited'
+						: globalConfig.maxPagesToCrawl;
+					log.info(
+						`Crawling: Page ${pageCounter} / ${maxPages} - URL: ${request.loadedUrl}...`
+					);
+					if (config.selector) {
+						if (config.selector.startsWith('/')) {
+							await waitForXPath(
+								page,
+								config.selector,
+								config.waitForSelectorTimeout ?? 5000
+							);
+						} else {
+							await page.waitForSelector(config.selector, {
+								timeout: config.waitForSelectorTimeout ?? 5000,
+							});
+						}
+					}
+					const html = await getPageHtml(page, config.selector);
+					await pushData({ title, url: request.loadedUrl, html });
+					if (config.onVisitPage) {
+						await config.onVisitPage({ page, pushData });
+					}
+					await enqueueLinks({
+						globs:
+							typeof config.match === 'string' ? [config.match] : config.match,
+						exclude: normalizeAndExpandExcludes(config.exclude),
+					});
+				},
+				...(globalConfig.maxPagesToCrawl !== 'unlimited' && {
+					maxRequestsPerCrawl: globalConfig.maxPagesToCrawl,
+				}),
+				maxConcurrency: 2,
+				maxRequestRetries: 2,
+				preNavigationHooks: [
+					async (crawlingContext, _gotoOptions) => {
+						const { request, page, log } = crawlingContext;
+						if (config.cookie) {
+							const cookies = (
+								Array.isArray(config.cookie) ? config.cookie : [config.cookie]
+							).map((cookie) => {
+								return {
+									name: cookie.name,
+									value: cookie.value,
+									url: request.url,
+								};
+							});
+							await page.context().addCookies(cookies);
+						}
+						const RESOURCE_EXCLUSTIONS = config.resourceExclusions ?? [];
+						if (RESOURCE_EXCLUSTIONS.length === 0) {
+							return;
+						}
+						await page.route(
+							`**\/*.{${RESOURCE_EXCLUSTIONS.join()}}`,
+							(route) => route.abort('aborted')
+						);
+						log.info(
+							`Aborting requests for as this is a resource excluded route`
+						);
+					},
+				],
+			},
+			new Configuration({
+				purgeOnStart: false,
+				defaultDatasetId: config.datasetName,
+				persistStorage: true,
+				storageClientOptions: {
+					localDataDirectory: storageDir,
+				},
+			})
+		);
+		let seedUrls = [config.entry];
+		const autoDiscoverNav = config.autoDiscoverNav ?? true;
+		if (autoDiscoverNav) {
+			try {
+				logger.info('Starting navigation discovery phase...');
+				const { chromium } = await import('playwright');
+				const browser = await chromium.launch({ headless: true });
+				const context = await browser.newContext();
+				const page = await context.newPage();
+				if (config.cookie) {
+					const cookies = (
+						Array.isArray(config.cookie) ? config.cookie : [config.cookie]
+					).map((cookie) => ({
+						name: cookie.name,
+						value: cookie.value,
+						url: config.entry,
+					}));
+					await context.addCookies(cookies);
+				}
+				await page.goto(config.entry, { waitUntil: 'domcontentloaded' });
+				const matchPatterns = Array.isArray(config.match)
+					? config.match
+					: [config.match];
+				const excludePatterns =
+					typeof config.exclude === 'string'
+						? [config.exclude]
+						: (config.exclude ?? []);
+				const discoverySelector =
+					config.discoverySelector ?? "nav, aside, [role='navigation']";
+				const discoveredUrls = await discoverNavigationUrls(
+					page,
+					discoverySelector,
+					matchPatterns,
+					excludePatterns
+				);
+				await browser.close();
+				logger.info(
+					{ count: discoveredUrls.length },
+					`Discovered ${discoveredUrls.length} URLs from navigation`
+				);
+				seedUrls = Array.from(new Set([...seedUrls, ...discoveredUrls]));
+				const expandedExcludes = expandExcludePatterns(excludePatterns);
+				seedUrls = seedUrls.filter((url) => {
+					return !expandedExcludes.some((pattern) => minimatch(url, pattern));
+				});
+				logger.info(
+					{ total: seedUrls.length },
+					`Total seed URLs: ${seedUrls.length}`
+				);
+			} catch (error) {
+				logger.warn(
+					{ error: error instanceof Error ? error.message : error },
+					'Navigation discovery failed, continuing with provided URLs'
+				);
+			}
+		}
+		const sitemapUrls = seedUrls.filter((url) => /sitemap.*\.xml$/.test(url));
+		if (sitemapUrls.length > 0) {
+			for (const sitemapUrl of sitemapUrls) {
+				const listOfUrls = await downloadListOfUrls({ url: sitemapUrl });
+				await crawler.addRequests(listOfUrls);
+			}
+			const regularUrls = seedUrls.filter(
+				(url) => !/sitemap.*\.xml$/.test(url)
+			);
+			if (regularUrls.length > 0) {
+				await crawler.addRequests(regularUrls);
+			}
+			await crawler.run();
+		} else {
+			await crawler.run(seedUrls);
+		}
+	}
+}
+export async function write(
+	config: ConfigWithDataset
+): Promise<PathLike | null> {
+	let nextFileNameString: PathLike | null = null;
+	const storageDir =
+		config.storageDir ||
+		join(process.cwd(), 'storage', 'jobs', config.datasetName);
+	const dataset = await Dataset.open(config.datasetName, {
+		storageClient: new Configuration({
+			storageClientOptions: {
+				localDataDirectory: storageDir,
+			},
+		}).getStorageClient(),
+	});
+	const itemCount = (await dataset.getInfo())?.itemCount || 0;
+	logger.info(
+		{ itemCount },
+		`Found ${itemCount} items in dataset to process...`
+	);
+	let currentResults: CrawledData[] = [];
+	let currentSize: number = 0;
+	let fileCounter: number = 1;
+	const maxBytes: number = config.maxFileSize
+		? config.maxFileSize * 1024 * 1024
+		: Infinity;
+	const getStringByteSize = (str: string): number =>
+		Buffer.byteLength(str, 'utf-8');
+	const nextFileName = (): string =>
+		`${config.outputFileName!.replace(/\.json$/, '')}-${fileCounter}.json`;
+	const writeBatchToFile = async (): Promise<void> => {
+		nextFileNameString = nextFileName();
+		const dir = dirname(nextFileNameString as string);
+		await mkdir(dir, { recursive: true });
+		await writeFile(
+			nextFileNameString,
+			JSON.stringify(currentResults, null, 2)
+		);
+		logger.info(
+			{ count: currentResults.length, file: nextFileNameString },
+			`Wrote ${currentResults.length} items to ${nextFileNameString}`
+		);
+		currentResults = [];
+		currentSize = 0;
+		fileCounter++;
+	};
+	let estimatedTokens: number = 0;
+	const addContentOrSplit = async (data: CrawledData): Promise<void> => {
+		const contentString: string = JSON.stringify(data);
+		if (globalConfig.maxTokens !== 'unlimited') {
+			const tokenCount: number | false = isWithinTokenLimit(
+				contentString,
+				globalConfig.maxTokens
+			);
+			if (typeof tokenCount === 'number') {
+				if (estimatedTokens + tokenCount > globalConfig.maxTokens) {
+					if (currentResults.length > 0) {
+						await writeBatchToFile();
+					}
+					estimatedTokens = Math.floor(tokenCount / 2);
+					currentResults.push(data);
+				} else {
+					currentResults.push(data);
+					estimatedTokens += tokenCount;
+				}
+			}
+		} else {
+			currentResults.push(data);
+		}
+		currentSize += getStringByteSize(contentString);
+		if (currentSize > maxBytes) {
+			await writeBatchToFile();
+		}
+	};
+	await dataset.forEach(async (item) => {
+		const data: CrawledData = item as CrawledData;
+		await addContentOrSplit(data);
+	});
+	if (currentResults.length > 0) {
+		if (fileCounter === 1) {
+			const finalFileName = config.outputFileName!;
+			const dir = dirname(finalFileName);
+			await mkdir(dir, { recursive: true });
+			await writeFile(finalFileName, JSON.stringify(currentResults, null, 2));
+			logger.info(
+				{ count: currentResults.length, file: finalFileName },
+				`Wrote ${currentResults.length} items to ${finalFileName}`
+			);
+			nextFileNameString = finalFileName;
+		} else {
+			await writeBatchToFile();
+		}
+	}
+	return nextFileNameString;
+}
+export async function cleanupJobStorage(
+	datasetName: string,
+	storageDir?: string
+): Promise<void> {
+	try {
+		const targetDir =
+			storageDir || join(process.cwd(), 'storage', 'jobs', datasetName);
+		try {
+			await rm(targetDir, { recursive: true, force: true });
+			logger.debug(
+				{ storageDir: targetDir },
+				'Cleaned up job storage directory'
+			);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+				throw error;
+			}
+		}
+	} catch (error) {
+		logger.warn(
+			{ datasetName, error: error instanceof Error ? error.message : error },
+			'Failed to clean up job storage'
+		);
+	}
+}
+class ContextCrawlerCore {
+	config: Config;
+	datasetName: string;
+	storageDir: string;
+	jobName: string;
+	constructor(config: Config, jobName: string) {
+		this.jobName = jobName;
+		const sanitizedFileName = config.outputFileName
+			? isAbsolute(config.outputFileName)
+				? config.outputFileName
+				: join('output/jobs', basename(config.outputFileName))
+			: generateOutputFileName(jobName);
+		this.config = {
+			...config,
+			outputFileName: sanitizedFileName,
+		};
+		this.datasetName = `ds-${randomBytes(4).toString('hex')}`;
+		this.storageDir = join(process.cwd(), 'storage', 'jobs', this.datasetName);
+	}
+	async crawl() {
+		const configWithDataset: ConfigWithDataset = {
+			...this.config,
+			datasetName: this.datasetName,
+			storageDir: this.storageDir,
+		};
+		await crawl(configWithDataset);
+	}
+	async write(): Promise<PathLike | null> {
+		const configWithDataset: ConfigWithDataset = {
+			...this.config,
+			datasetName: this.datasetName,
+			storageDir: this.storageDir,
+		};
+		return write(configWithDataset);
+	}
+	async cleanup(): Promise<void> {
+		await cleanupJobStorage(this.datasetName, this.storageDir);
+	}
+}
+export default ContextCrawlerCore;
+</file>
+
+</files>

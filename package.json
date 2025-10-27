@@ -7,6 +7,8 @@
   },
   "description": "Crawl websites to generate knowledge files from one or multiple URLs",
   "dependencies": {
+    "@langchain/community": "^1.0.0",
+    "@xenova/transformers": "^2.17.2",
     "better-sqlite3": "^12.4.1",
     "commander": "^14.0.1",
     "cors": "^2.8.5",
@@ -16,7 +18,9 @@
     "express": "^5.1.0",
     "glob": "^11.0.3",
     "gpt-tokenizer": "^3.2.0",
+    "hnswlib-node": "^3.0.0",
     "inquirer": "^12.10.0",
+    "langchain": "^1.0.1",
     "minimatch": "^10.0.1",
     "pino": "^10.1.0",
     "pino-pretty": "^13.1.2",
@@ -40,6 +44,7 @@
   },
   "scripts": {
     "preinstall": "npx playwright install",
+    "postinstall": "bun run scripts/download-model.ts",
     "generate:jobs": "bun run scripts/generate-job-index.ts",
     "dev": "bun run cli -- batch",
     "prebuild": "bun run generate:jobs",

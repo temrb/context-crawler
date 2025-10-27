@@ -4,7 +4,7 @@
 		"maxFileSize": 52428800
 	},
 	"output": {
-		"filePath": "output/concatenated.xml",
+		"filePath": "concatenated.xml",
 		"style": "xml",
 		"parsableStyle": false,
 		"fileSummary": false,
@@ -27,7 +27,7 @@
 			"includeLogsCount": 50
 		}
 	},
-	"include": ["output/jobs", "CLAUDE.md"],
+	"include": ["configurations", "CLAUDE.md", "src"],
 	"ignore": {
 		"useGitignore": true,
 		"useDefaultPatterns": true,

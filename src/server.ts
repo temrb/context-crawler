@@ -2,9 +2,11 @@ import cors from 'cors';
 import { randomUUID } from 'crypto';
 import { configDotenv } from 'dotenv';
 import express, { Express, NextFunction, Request, Response } from 'express';
-import { createReadStream } from 'fs';
+import { createReadStream, existsSync } from 'fs';
 import { readFile, stat } from 'fs/promises';
+import { glob } from 'glob';
 import net from 'net';
+import { join, parse } from 'path';
 import swaggerUi from 'swagger-ui-express';
 import {
 	getAllJobNames,
@@ -12,12 +14,15 @@ import {
 } from './config.js';
 import { jobStore } from './job-store.js';
 import logger from './logger.js';
+import { llmService } from './llm-service.js';
 import { crawlQueue } from './queue.js';
 import { Config, configSchema, generateOutputFileName } from './schema.js';
 
 configDotenv();
 
 const DEFAULT_PORT = 5000;
+const JOBS_OUTPUT_DIR = join(process.cwd(), 'output', 'jobs');
+const INDEXES_DIR = join(process.cwd(), 'data', 'indexes');
 
 function parsePort(value: string | undefined): number | undefined {
 	if (!value) {
@@ -403,6 +408,77 @@ function registerRoutes(): void {
 			res.status(500).json({ message: 'Error fetching configurations' });
 		}
 	});
+
+	app.get('/get/:jobName/llms.txt', async (req: Request, res: Response) => {
+		const { jobName } = req.params;
+		const subject = req.query.subject as string | undefined;
+		const kParam = req.query.k as string | undefined;
+		const k = kParam ? parseInt(kParam, 10) : 5;
+
+		if (Number.isNaN(k) || k <= 0 || k > 20) {
+			res.status(400).json({
+				message: 'Query parameter "k" must be a number between 1 and 20.',
+			});
+			return;
+		}
+
+		if (!jobName || !llmService.jobExists(jobName)) {
+			res.status(404).json({
+				message: `Knowledge file for job '${jobName}' not found.`,
+				availableJobs: getAllJobNames(),
+			});
+			return;
+		}
+
+		try {
+			res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+
+			if (subject && subject.trim() !== '' && subject.trim() !== '*') {
+				logger.info({ job: jobName, subject, k }, 'Performing semantic search');
+				const searchResults = await llmService.search(jobName, subject, k);
+				res.send(searchResults);
+				return;
+			}
+
+			logger.info({ job: jobName }, 'Streaming full llms.txt file');
+			const stream = llmService.getFullTextStream(jobName);
+			stream.pipe(res);
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+			logger.error(
+				{ job: jobName, error: errorMessage },
+				'Error serving LLM content',
+			);
+			res
+				.status(500)
+				.send(`Error processing request for '${jobName}': ${errorMessage}`);
+		}
+	});
+
+	app.get('/llms/status', authenticateApiKey, async (_req: Request, res: Response) => {
+		try {
+			const jobFiles = await glob(`${JOBS_OUTPUT_DIR}/*.json`);
+			const statuses = await Promise.all(
+				jobFiles.map(async (jobFile) => {
+					const jobName = parse(jobFile).name;
+					const indexPath = join(INDEXES_DIR, `${jobName}.index`);
+					const isIndexed = existsSync(indexPath);
+					let lastModified: Date | null = null;
+
+					if (isIndexed) {
+						lastModified = (await stat(indexPath)).mtime;
+					}
+
+					return { jobName, isIndexed, lastModified };
+				}),
+			);
+
+			res.json(statuses);
+		} catch (error) {
+			logger.error({ error }, 'Failed to get LLM artifact statuses');
+			res.status(500).json({ message: 'Could not retrieve artifact statuses.' });
+		}
+	});
 }
 
 // Wrap async initialization in IIFE to avoid top-level await issues
@@ -428,6 +504,10 @@ function registerRoutes(): void {
 
 	// Initialize the queue before starting the server
 	await crawlQueue.initialize();
+
+	llmService.initialize().catch((error) => {
+		logger.error({ error }, 'Background LLM initialization failed.');
+	});
 
 	let port = preferredPort;
 

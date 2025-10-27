@@ -5,6 +5,7 @@ import { jobStore } from "./job-store.js";
 import logger from "./logger.js";
 import { crawlQueue, QueueJob } from "./queue.js";
 import { runTask } from "./task-runner.js";
+import { llmService } from "./llm-service.js";
 
 configDotenv();
 
@@ -55,6 +56,20 @@ async function processCrawlJob(job: QueueJob): Promise<void> {
         outputFile: result.outputFile || undefined,
         completedAt: new Date(),
       });
+
+      if (result.outputFile && jobName) {
+        logger.info({ jobId, jobName }, "Triggering LLM artifact generation...");
+        void llmService.processJobOutput(jobName).catch((error) => {
+          logger.error(
+            {
+              jobId,
+              jobName,
+              error: error instanceof Error ? error.message : error,
+            },
+            "LLM artifact generation failed post-job.",
+          );
+        });
+      }
 
       // Auto-clear completed jobs from queue
       const clearedCount = crawlQueue.clearCompletedJobs();
