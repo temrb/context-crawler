@@ -172,7 +172,10 @@ async function pollQueue(): Promise<void> {
 /**
  * Start the worker polling loop
  */
-function startWorker(): void {
+async function startWorker(): Promise<void> {
+  // Initialize the queue before starting
+  await crawlQueue.initialize();
+
   logger.info(
     {
       concurrency: WORKER_CONCURRENCY,
@@ -284,4 +287,4 @@ process.on("unhandledRejection", (reason) => {
 });
 
 // Start the worker
-startWorker();
+await startWorker();

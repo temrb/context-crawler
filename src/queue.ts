@@ -40,22 +40,29 @@ export interface QueueJob {
 }
 
 class SQLiteQueue {
-  private db: Database.Database;
+  private db!: Database.Database;
   private dbPath: string;
+  private initialized = false;
 
   constructor(dbPath: string = "./data/queue.db") {
     this.dbPath = dbPath;
-    this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL"); // Better concurrency
   }
 
   /**
    * Initialize the database and ensure tables exist
    */
   async initialize(): Promise<void> {
+    if (this.initialized) {
+      return;
+    }
+
     // Ensure the directory exists
     const dir = dirname(this.dbPath);
     await mkdir(dir, { recursive: true });
+
+    // Open the database connection
+    this.db = new Database(this.dbPath);
+    this.db.pragma("journal_mode = WAL"); // Better concurrency
 
     // Create queue table
     this.db.exec(`
@@ -78,6 +85,8 @@ class SQLiteQueue {
       CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC);
       CREATE INDEX IF NOT EXISTS idx_queue_nextRetryAt ON queue(nextRetryAt);
     `);
+
+    this.initialized = true;
   }
 
   /**
@@ -313,6 +322,3 @@ class SQLiteQueue {
 
 // Export a singleton instance
 export const crawlQueue = new SQLiteQueue();
-
-// Initialize the queue on import
-await crawlQueue.initialize();
