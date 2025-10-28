@@ -59,16 +59,22 @@ async function processCrawlJob(job: QueueJob): Promise<void> {
 
       if (result.outputFile && jobName) {
         logger.info({ jobId, jobName }, "Triggering LLM artifact generation...");
-        void llmService.processJobOutput(jobName).catch((error) => {
+        try {
+          await llmService.processJobOutput(jobName);
+          logger.info(
+            { jobId, jobName },
+            "LLM artifacts generated successfully",
+          );
+        } catch (error) {
           logger.error(
             {
               jobId,
               jobName,
               error: error instanceof Error ? error.message : error,
             },
-            "LLM artifact generation failed post-job.",
+            "LLM artifact generation failed (non-fatal)",
           );
-        });
+        }
       }
 
       // Auto-clear completed jobs from queue

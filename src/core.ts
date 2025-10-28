@@ -14,6 +14,7 @@ import { basename, dirname, isAbsolute, join } from 'path';
 import { Page } from 'playwright';
 import { globalConfig } from './config.js';
 import logger from './logger.js';
+import { PATHS } from './paths.js';
 import {
 	Config,
 	configSchema,
@@ -53,7 +54,7 @@ export function getPageHtml(page: Page, selector = 'body') {
 /**
  * Expand exclude patterns to match both the path and all subpaths
  * Example: /support becomes ['/support', '/support/**']
- * Patterns with wildcards are kept as-is to avoid breaking glob semantics
+ * Example: pattern with wildcards also expanded to match subpaths
  */
 function expandExcludePatterns(patterns: string[]): string[] {
 	const expanded = new Set<string>();
@@ -62,8 +63,8 @@ function expandExcludePatterns(patterns: string[]): string[] {
 		// Always add the original pattern
 		expanded.add(pattern);
 
-		// Only add /** variant for plain directory paths (no wildcards)
-		if (!pattern.includes('*') && !pattern.endsWith('/')) {
+		// Add /** variant to match subpaths unless already has /** or /*
+		if (!pattern.endsWith('/**') && !pattern.endsWith('/*')) {
 			expanded.add(`${pattern}/**`);
 		}
 	}
@@ -153,8 +154,7 @@ export async function crawl(config: ConfigWithDataset) {
 	if (process.env.NO_CRAWL !== 'true') {
 		// Create isolated storage directory for this job
 		const storageDir =
-			config.storageDir ||
-			join(process.cwd(), 'storage', 'jobs', config.datasetName);
+			config.storageDir || join(PATHS.storage, 'jobs', config.datasetName);
 
 		// Ensure storage directory exists
 		await mkdir(storageDir, { recursive: true });
@@ -167,9 +167,10 @@ export async function crawl(config: ConfigWithDataset) {
 				async requestHandler({ request, page, enqueueLinks, log, pushData }) {
 					const title = await page.title();
 					pageCounter++;
-					const maxPages = globalConfig.maxPagesToCrawl === 'unlimited'
-						? 'unlimited'
-						: globalConfig.maxPagesToCrawl;
+					const maxPages =
+						globalConfig.maxPagesToCrawl === 'unlimited'
+							? 'unlimited'
+							: globalConfig.maxPagesToCrawl;
 					log.info(
 						`Crawling: Page ${pageCounter} / ${maxPages} - URL: ${request.loadedUrl}...`
 					);
@@ -267,44 +268,69 @@ export async function crawl(config: ConfigWithDataset) {
 		// Navigation discovery phase (if enabled)
 		const autoDiscoverNav = config.autoDiscoverNav ?? true;
 		if (autoDiscoverNav) {
+			const discoveryTimeoutMs = 30_000;
+			let timeoutId: NodeJS.Timeout | undefined;
+
 			try {
-				logger.info('Starting navigation discovery phase...');
-				const { chromium } = await import('playwright');
-				const browser = await chromium.launch({ headless: true });
-				const context = await browser.newContext();
-				const page = await context.newPage();
+				const discoveryTask = (async () => {
+					logger.info('Starting navigation discovery phase...');
+					const { chromium } = await import('playwright');
+					const browser = await chromium.launch({
+						headless: true,
+						timeout: 15_000,
+					});
+					try {
+						const context = await browser.newContext();
+						const page = await context.newPage();
 
-				// Apply cookies if configured
-				if (config.cookie) {
-					const cookies = (
-						Array.isArray(config.cookie) ? config.cookie : [config.cookie]
-					).map((cookie) => ({
-						name: cookie.name,
-						value: cookie.value,
-						url: config.entry,
-					}));
-					await context.addCookies(cookies);
-				}
+						// Apply cookies if configured
+						if (config.cookie) {
+							const cookies = (
+								Array.isArray(config.cookie) ? config.cookie : [config.cookie]
+							).map((cookie) => ({
+								name: cookie.name,
+								value: cookie.value,
+								url: config.entry,
+							}));
+							await context.addCookies(cookies);
+						}
 
-				// Load entry point URL and discover nav links
-				await page.goto(config.entry, { waitUntil: 'domcontentloaded' });
-				const matchPatterns = Array.isArray(config.match)
-					? config.match
-					: [config.match];
-				const excludePatterns =
-					typeof config.exclude === 'string'
-						? [config.exclude]
-						: (config.exclude ?? []);
-				const discoverySelector =
-					config.discoverySelector ?? "nav, aside, [role='navigation']";
-				const discoveredUrls = await discoverNavigationUrls(
-					page,
-					discoverySelector,
-					matchPatterns,
-					excludePatterns
-				);
+						// Load entry point URL and discover nav links
+						await page.goto(config.entry, {
+							waitUntil: 'domcontentloaded',
+							timeout: 15_000,
+						});
+						const matchPatterns = Array.isArray(config.match)
+							? config.match
+							: [config.match];
+						const excludePatterns =
+							typeof config.exclude === 'string'
+								? [config.exclude]
+								: (config.exclude ?? []);
+						const discoverySelector =
+							config.discoverySelector ?? "nav, aside, [role='navigation'], #sidebar, [id*='sidebar']";
+						return await discoverNavigationUrls(
+							page,
+							discoverySelector,
+							matchPatterns,
+							excludePatterns
+						);
+					} finally {
+						await browser.close();
+					}
+				})();
 
-				await browser.close();
+				const timeoutPromise = new Promise<never>((_, reject) => {
+					timeoutId = setTimeout(
+						() => reject(new Error('Navigation discovery timeout')),
+						discoveryTimeoutMs
+					);
+				});
+
+				const discoveredUrls = await Promise.race([
+					discoveryTask,
+					timeoutPromise,
+				]);
 
 				logger.info(
 					{ count: discoveredUrls.length },
@@ -315,6 +341,10 @@ export async function crawl(config: ConfigWithDataset) {
 				seedUrls = Array.from(new Set([...seedUrls, ...discoveredUrls]));
 
 				// Filter out excluded URLs
+				const excludePatterns =
+					typeof config.exclude === 'string'
+						? [config.exclude]
+						: (config.exclude ?? []);
 				const expandedExcludes = expandExcludePatterns(excludePatterns);
 				seedUrls = seedUrls.filter((url) => {
 					return !expandedExcludes.some((pattern) => minimatch(url, pattern));
@@ -328,20 +358,49 @@ export async function crawl(config: ConfigWithDataset) {
 					{ error: error instanceof Error ? error.message : error },
 					'Navigation discovery failed, continuing with provided URLs'
 				);
+			} finally {
+				if (timeoutId) {
+					clearTimeout(timeoutId);
+				}
 			}
 		}
 
 		// Check if any URL is a sitemap
 		const sitemapUrls = seedUrls.filter((url) => /sitemap.*\.xml$/.test(url));
-
 		if (sitemapUrls.length > 0) {
-			// Handle sitemap URLs
+			const excludePatterns = normalizeAndExpandExcludes(config.exclude);
+
 			for (const sitemapUrl of sitemapUrls) {
-				const listOfUrls = await downloadListOfUrls({ url: sitemapUrl });
+				let listOfUrls = await downloadListOfUrls({ url: sitemapUrl });
+
+				// Correctly filter URLs from the sitemap against exclusion patterns
+				const initialCount = listOfUrls.length;
+				listOfUrls = listOfUrls.filter((url) => {
+					return !excludePatterns.some((pattern) => {
+						if (minimatch(url, pattern)) {
+							return true;
+						}
+						try {
+							const pathname = new URL(url).pathname;
+							if (minimatch(pathname, pattern)) {
+								return true;
+							}
+						} catch {
+							// Invalid URL, ignore pathname check
+						}
+						return false;
+					});
+				});
+				const excludedCount = initialCount - listOfUrls.length;
+				if (excludedCount > 0) {
+					logger.info(
+						`Excluded ${excludedCount} URLs from sitemap '${basename(sitemapUrl)}'.`
+					);
+				}
 				await crawler.addRequests(listOfUrls);
 			}
 
-			// Add non-sitemap URLs
+			// Also add any regular (non-sitemap) URLs that were in the seed list
 			const regularUrls = seedUrls.filter(
 				(url) => !/sitemap.*\.xml$/.test(url)
 			);
@@ -349,9 +408,10 @@ export async function crawl(config: ConfigWithDataset) {
 				await crawler.addRequests(regularUrls);
 			}
 
+			// IMPORTANT: Run the crawler
 			await crawler.run();
 		} else {
-			// Regular crawling with all seed URLs
+			// IMPORTANT: This else block ensures the crawler runs for non-sitemap jobs
 			await crawler.run(seedUrls);
 		}
 	}
@@ -364,8 +424,7 @@ export async function write(
 
 	// Determine storage directory
 	const storageDir =
-		config.storageDir ||
-		join(process.cwd(), 'storage', 'jobs', config.datasetName);
+		config.storageDir || join(PATHS.storage, 'jobs', config.datasetName);
 
 	// Open the dataset for this crawl with the same storage configuration
 	const dataset = await Dataset.open(config.datasetName, {
@@ -484,8 +543,7 @@ export async function cleanupJobStorage(
 	storageDir?: string
 ): Promise<void> {
 	try {
-		const targetDir =
-			storageDir || join(process.cwd(), 'storage', 'jobs', datasetName);
+		const targetDir = storageDir || join(PATHS.storage, 'jobs', datasetName);
 
 		// Check if directory exists before attempting to remove
 		try {
@@ -522,9 +580,9 @@ class ContextCrawlerCore {
 		// Sanitize relative paths to output/jobs directory
 		const sanitizedFileName = config.outputFileName
 			? isAbsolute(config.outputFileName)
-				? config.outputFileName  // Allow absolute paths (e.g., temp directory)
-				: join('output/jobs', basename(config.outputFileName))  // Sanitize relative paths
-			: generateOutputFileName(jobName);  // Default from job name
+				? config.outputFileName // Allow absolute paths (e.g., temp directory)
+				: join(PATHS.jobsOutput, basename(config.outputFileName)) // Sanitize relative paths
+			: generateOutputFileName(jobName); // Default from job name
 
 		// Auto-generate outputFileName from job name if not provided
 		this.config = {
@@ -534,7 +592,7 @@ class ContextCrawlerCore {
 		// Generate a unique dataset name to isolate this crawl's data
 		this.datasetName = `ds-${randomBytes(4).toString('hex')}`;
 		// Set the storage directory for this job
-		this.storageDir = join(process.cwd(), 'storage', 'jobs', this.datasetName);
+		this.storageDir = join(PATHS.storage, 'jobs', this.datasetName);
 	}
 
 	async crawl() {

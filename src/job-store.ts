@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { PathLike } from "fs";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
+import { PATHS } from "./paths.js";
 import { Config } from "./schema.js";
 
 export type JobStatus = "pending" | "running" | "completed" | "failed";
@@ -29,7 +30,7 @@ export interface JobRecord {
 class JobStore {
   private db: Database.Database;
 
-  constructor(dbPath: string = "./data/jobs.db") {
+  constructor(dbPath: string = PATHS.jobsDb) {
     // Ensure the directory exists
     const dir = dirname(dbPath);
     mkdirSync(dir, { recursive: true });

@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdir } from "fs/promises";
 import { dirname } from "path";
+import { PATHS } from "./paths.js";
 import { Config } from "./schema.js";
 
 // Define the job data interface
@@ -44,7 +45,7 @@ class SQLiteQueue {
   private dbPath: string;
   private initialized = false;
 
-  constructor(dbPath: string = "./data/queue.db") {
+  constructor(dbPath: string = PATHS.queueDb) {
     this.dbPath = dbPath;
   }
 
@@ -89,6 +90,16 @@ class SQLiteQueue {
     this.initialized = true;
   }
 
+  private ensureInitialized(): void {
+    if (!this.initialized) {
+      throw new Error("Queue not initialized. Call initialize() first.");
+    }
+  }
+
+  public isInitialized(): boolean {
+    return this.initialized;
+  }
+
   /**
    * Add a new job to the queue
    */
@@ -104,18 +115,32 @@ class SQLiteQueue {
       backoffDelay = 1000,
     } = options;
 
+    this.ensureInitialized();
+
     const stmt = this.db.prepare(`
       INSERT INTO queue (jobId, status, data, priority, maxAttempts, createdAt)
       VALUES (?, 'pending', ?, ?, ?, ?)
     `);
 
-    stmt.run(
-      jobId,
-      JSON.stringify(data),
-      priority,
-      maxAttempts,
-      new Date().toISOString(),
-    );
+    try {
+      stmt.run(
+        jobId,
+        JSON.stringify(data),
+        priority,
+        maxAttempts,
+        new Date().toISOString(),
+      );
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        (error as { code?: string }).code === "SQLITE_CONSTRAINT"
+      ) {
+        throw new Error(`Job with ID ${jobId} already exists in queue`);
+      }
+      throw error;
+    }
   }
 
   /**
@@ -123,6 +148,7 @@ class SQLiteQueue {
    * Returns null if no job is available
    */
   claimNextJob(): QueueJob | null {
+    this.ensureInitialized();
     const now = new Date().toISOString();
 
     // Use a transaction to atomically claim a job
@@ -170,6 +196,7 @@ class SQLiteQueue {
    * Mark a job as completed
    */
   markCompleted(queueJobId: string): void {
+    this.ensureInitialized();
     const stmt = this.db.prepare(`
       UPDATE queue
       SET status = 'completed',
@@ -189,6 +216,7 @@ class SQLiteQueue {
     shouldRetry: boolean,
     backoffDelay: number = 1000,
   ): void {
+    this.ensureInitialized();
     const record = this.db
       .prepare("SELECT * FROM queue WHERE id = ?")
       .get(queueJobId) as QueueJobRecord | undefined;
@@ -230,6 +258,7 @@ class SQLiteQueue {
    * Reset stuck jobs (claimed but not completed for too long)
    */
   resetStuckJobs(timeoutMs: number = 30 * 60 * 1000): number {
+    this.ensureInitialized();
     const cutoffTime = new Date(Date.now() - timeoutMs).toISOString();
 
     const stmt = this.db.prepare(`
@@ -248,6 +277,7 @@ class SQLiteQueue {
    * Clean up old completed/failed jobs
    */
   cleanupOldJobs(ageMs: number = 7 * 24 * 60 * 60 * 1000): number {
+    this.ensureInitialized();
     const cutoffTime = new Date(Date.now() - ageMs).toISOString();
 
     const stmt = this.db.prepare(`
@@ -264,6 +294,7 @@ class SQLiteQueue {
    * Clear all completed/failed jobs immediately (regardless of age)
    */
   clearCompletedJobs(): number {
+    this.ensureInitialized();
     const stmt = this.db.prepare(`
       DELETE FROM queue
       WHERE status IN ('completed', 'failed')
@@ -283,6 +314,7 @@ class SQLiteQueue {
     failed: number;
     total: number;
   } {
+    this.ensureInitialized();
     const stmt = this.db.prepare(`
       SELECT
         status,
@@ -316,7 +348,11 @@ class SQLiteQueue {
    * Close the database connection
    */
   close(): void {
+    if (!this.initialized) {
+      return;
+    }
     this.db.close();
+    this.initialized = false;
   }
 }
 

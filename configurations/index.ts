@@ -10,6 +10,7 @@ import polarSh from './jobs/polar-sh.js';
 import prisma from './jobs/prisma.js';
 import react19 from './jobs/react-19.js';
 import trpc from './jobs/trpc.js';
+import upstash from './jobs/upstash.js';
 import zod from './jobs/zod.js';
 
 /**
@@ -23,6 +24,7 @@ export const jobs = {
 	prisma,
 	'react-19': react19,
 	trpc,
+	upstash,
 	zod,
 } satisfies Record<string, JobTasks>;
 
