@@ -5,12 +5,13 @@ import { createReadStream, existsSync } from 'fs';
 import { mkdir, readFile, stat, writeFile } from 'fs/promises';
 import { join } from 'path';
 import logger from './logger.js';
+import { PATHS } from './paths.js';
 import { CrawledData } from './schema.js';
 import { XenovaTransformersEmbeddings } from './xenova-embeddings.js';
 
-const LLMS_DIR = join(process.cwd(), 'data', 'llms');
-const INDEXES_DIR = join(process.cwd(), 'data', 'indexes');
-const JOBS_OUTPUT_DIR = join(process.cwd(), 'output', 'jobs');
+const LLMS_DIR = PATHS.llms;
+const INDEXES_DIR = PATHS.indexes;
+const JOBS_OUTPUT_DIR = PATHS.jobsOutput;
 
 const DEFAULT_CHUNK_SIZE = 10000;
 const DEFAULT_CHUNK_OVERLAP = 100;
@@ -198,9 +199,12 @@ ${item.html}`
 		const indexStats = await stat(indexPath);
 		const metadataStats = await stat(metadataPath);
 
+		const thresholdMs = 1000; // Allow for coarse filesystem timestamp resolution
+		const jsonMtime = jsonStats.mtime.getTime();
+
 		return (
-			jsonStats.mtime > indexStats.mtime ||
-			jsonStats.mtime > metadataStats.mtime
+			jsonMtime > indexStats.mtime.getTime() + thresholdMs ||
+			jsonMtime > metadataStats.mtime.getTime() + thresholdMs
 		);
 	}
 

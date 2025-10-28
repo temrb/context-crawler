@@ -2,8 +2,9 @@ import { glob } from "glob";
 import { parse } from "path";
 import logger from "../logger.js";
 import { llmService } from "../llm-service.js";
+import { PATHS } from "../paths.js";
 
-const JOBS_OUTPUT_GLOB = "output/jobs/*.json";
+const JOBS_OUTPUT_GLOB = `${PATHS.jobsOutput.replace(/\\/g, "/")}/*.json`;
 
 async function checkAllArtifacts(): Promise<void> {
   const jobFiles = await glob(JOBS_OUTPUT_GLOB);

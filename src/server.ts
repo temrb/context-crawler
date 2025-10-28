@@ -15,14 +15,15 @@ import {
 import { jobStore } from './job-store.js';
 import logger from './logger.js';
 import { llmService } from './llm-service.js';
+import { PATHS } from './paths.js';
 import { crawlQueue } from './queue.js';
 import { Config, configSchema, generateOutputFileName } from './schema.js';
 
 configDotenv();
 
 const DEFAULT_PORT = 5000;
-const JOBS_OUTPUT_DIR = join(process.cwd(), 'output', 'jobs');
-const INDEXES_DIR = join(process.cwd(), 'data', 'indexes');
+const JOBS_OUTPUT_DIR = PATHS.jobsOutput;
+const INDEXES_DIR = PATHS.indexes;
 
 function parsePort(value: string | undefined): number | undefined {
 	if (!value) {
@@ -140,6 +141,32 @@ function authenticateApiKey(req: Request, res: Response, next: NextFunction): vo
 }
 
 function registerRoutes(): void {
+	// Health check endpoint for liveness probes
+	app.get('/health', (_req: Request, res: Response) => {
+		res.json({
+			status: 'ok',
+			timestamp: new Date().toISOString(),
+		});
+	});
+
+	// Readiness check endpoint for container orchestration
+	app.get('/ready', async (_req: Request, res: Response) => {
+		try {
+			// Check critical dependencies
+			const queueStats = crawlQueue.getStats();
+			res.json({
+				status: 'ready',
+				queue: queueStats,
+				timestamp: new Date().toISOString(),
+			});
+		} catch (error) {
+			res.status(503).json({
+				status: 'not ready',
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	});
+
 	// Define a POST route to accept a job name or custom config and start a crawl job
 	app.post('/crawl', authenticateApiKey, async (req: Request, res: Response) => {
 		const { name, config: customConfig } = req.body;
@@ -567,22 +594,13 @@ function registerRoutes(): void {
 	}, 1000).unref();
 
 	let isShuttingDown = false;
-	let resolveShutdown: ((code: number) => void) | undefined;
 
-	const shutdownComplete = new Promise<number>((resolve) => {
-		resolveShutdown = resolve;
-	});
-
-	// Graceful shutdown handlers
 	async function shutdown(signal: string, code = 0): Promise<void> {
-		if (isShuttingDown) {
-			return;
-		}
-
+		if (isShuttingDown) return;
 		isShuttingDown = true;
+
 		logger.info({ signal }, 'Shutdown signal received');
 
-		// Stop accepting new connections
 		if (server.listening) {
 			await new Promise<void>((resolve) => {
 				server.close(() => {
@@ -590,44 +608,18 @@ function registerRoutes(): void {
 					resolve();
 				});
 			});
-		} else {
-			logger.info('HTTP server already closed');
 		}
 
-		// Close database connections
-		try {
-			crawlQueue.close();
-			logger.info('Queue connection closed');
-		} catch (error) {
-			logger.error(
-				{ error: error instanceof Error ? error.message : error },
-				'Error closing queue connection'
-			);
-		}
-
-		try {
-			jobStore.close();
-			logger.info('Job store connection closed');
-		} catch (error) {
-			logger.error(
-				{ error: error instanceof Error ? error.message : error },
-				'Error closing job store connection'
-			);
-		}
+		crawlQueue.close();
+		jobStore.close();
 
 		logger.info('Server shutdown complete');
-
-		if (resolveShutdown) {
-			resolveShutdown(code);
-			resolveShutdown = undefined;
-		}
+		process.exit(code);
 	}
 
-	// Handle shutdown signals
 	process.on('SIGTERM', () => shutdown('SIGTERM'));
 	process.on('SIGINT', () => shutdown('SIGINT'));
 
-	// Handle uncaught errors
 	process.on('uncaughtException', (error) => {
 		logger.error(
 			{ error: error.message, stack: error.stack },
@@ -643,9 +635,6 @@ function registerRoutes(): void {
 		);
 		shutdown('unhandledRejection', 1);
 	});
-
-	const exitCode = await shutdownComplete;
-	process.exit(exitCode);
 })().catch((error) => {
 	logger.error({ error }, 'Failed to start server');
 	process.exit(1);

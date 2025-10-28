@@ -1,6 +1,8 @@
 import { configDotenv } from 'dotenv';
+import { join } from 'path';
 import type { Page } from 'playwright';
 import { z } from 'zod';
+import { PATHS } from './paths.js';
 
 configDotenv();
 
@@ -151,5 +153,6 @@ export function generateNameFromUrl(url: string): string {
  * @example "next-js-16" → "output/jobs/next-js-16.json"
  */
 export function generateOutputFileName(jobName: string): string {
-	return `output/jobs/${jobName}.json`;
+	// Use the configured path for job outputs
+	return join(PATHS.jobsOutput, `${jobName}.json`);
 }
